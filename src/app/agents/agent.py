@@ -186,14 +186,15 @@ def negative_analysis(state: FeedbackState):
 
 def route_negative_priority(
     state: FeedbackState,
-) -> Literal["customer_only", "support", "critical"]:
+) -> (
+    Literal["prepare_negative_email"]
+    | list[Literal["create_support_ticket", "prepare_negative_email"]]
+):
     priority = state["analysis"]["priority"]
     if priority == "P3":
-        return "customer_only"
-    if priority == "P2":
-        return "support"
-    if priority == "P1":
-        return "critical"
+        return "prepare_negative_email"
+    if priority in {"P1", "P2"}:
+        return ["create_support_ticket", "prepare_negative_email"]
     raise ValueError(f"Unsupported feedback priority: {priority}")
 
 
@@ -595,14 +596,8 @@ def agent_manager():
     builder.add_conditional_edges(
         "negative_analysis",
         route_negative_priority,
-        {
-            "customer_only": "prepare_negative_email",
-            "support": "create_support_ticket",
-            "critical": "create_support_ticket",
-        },
     )
     builder.add_edge("create_support_ticket", "send_internal_notification")
-    builder.add_edge("send_internal_notification", "prepare_negative_email")
     builder.add_edge("prepare_negative_email", "human_email_review")
     builder.add_conditional_edges(
         "human_email_review",

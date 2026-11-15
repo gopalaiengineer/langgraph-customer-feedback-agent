@@ -131,32 +131,33 @@ flowchart TD
 
     H -- Positive --> I[Generate thank-you email]
     H -- Negative --> J[Analyze complaint, urgency, and severity]
-    J --> K[Determine priority: P1, P2, or P3]
+    J --> K{Priority?}
 
-    K --> L{Priority?}
-    L -- P3 --> M[Prepare apology email]
-    L -- P2 --> N[Prepare support ticket and notify support team]
-    L -- P1 --> O[Prepare critical ticket and notify support team and manager]
+    K -- P3 --> M[Prepare negative email]
+    K -- P2 --> N[Create support ticket]
+    K -- P2 --> O[Prepare negative email]
+    K -- P1 --> P[Create support ticket]
+    K -- P1 --> Q[Prepare negative email]
 
-    N --> P[Generate customer email]
-    O --> P
-    M --> P
-    I --> P
+    N --> R[Notify support team]
+    P --> S[Notify support team and manager]
+    I --> T[Human email review interrupt]
+    M --> T
+    O --> T
+    Q --> T
 
-    P --> Q[Human email review interrupt]
-    Q --> R{Reviewer decision}
+    T --> U{Reviewer decision}
+    U -- Accepted --> V[Send approved email through SMTP]
+    U -- Needs Evaluation --> W[Validate reviewer clarification]
+    W --> X{Revision allowed and limit not reached?}
+    X -- Yes --> Y[Regenerate email draft]
+    Y --> T
+    X -- No --> AA[Stop or return for final reviewer decision]
 
-    R -- Accepted --> S[Send approved email through SMTP]
-    R -- Needs Evaluation --> T[Validate reviewer clarification]
-    T --> U{Revision allowed and limit not reached?}
-    U -- Yes --> V[Regenerate email draft]
-    V --> Q
-    U -- No --> W[Stop or return for final reviewer decision]
-
-    R -- Stop --> AA[End without sending customer email]
-    S --> AB([Completed])
-    W --> AA
-    AA --> Z
+    U -- Stop --> AB[End without sending customer email]
+    V --> AC([Completed])
+    AA --> AB
+    AB --> Z
 ```
 
 ### Graph walkthrough

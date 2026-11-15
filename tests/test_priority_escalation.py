@@ -1,4 +1,5 @@
 import unittest
+from threading import Event
 from unittest.mock import Mock, patch
 
 from app.agents import agent
@@ -35,15 +36,15 @@ class PriorityEscalationTests(unittest.TestCase):
     def test_priority_router_selects_customer_or_escalation_path(self):
         self.assertEqual(
             agent.route_negative_priority({"analysis": analysis("P3")}),
-            "customer_only",
+            "prepare_negative_email",
         )
         self.assertEqual(
             agent.route_negative_priority({"analysis": analysis("P2")}),
-            "support",
+            ["create_support_ticket", "prepare_negative_email"],
         )
         self.assertEqual(
             agent.route_negative_priority({"analysis": analysis("P1")}),
-            "critical",
+            ["create_support_ticket", "prepare_negative_email"],
         )
 
     def test_analysis_rejects_mismatched_priority_escalation(self):
@@ -167,6 +168,66 @@ class PriorityEscalationTests(unittest.TestCase):
                         result["internal_notification_status"],
                         "sent",
                     )
+
+    def test_customer_email_branch_does_not_wait_for_internal_notification(self):
+        initial_state = {
+            "customer_name": "Test Customer",
+            "customer_email": "customer@example.com",
+            "feedback": "The product did not work as expected.",
+            "sentiment": None,
+            "sentiment_reason": None,
+            "analysis": None,
+            "support_ticket": None,
+            "internal_notification_status": None,
+            "email_subject": None,
+            "email_body": None,
+            "email_status": "awaiting_approval",
+            "approval_status": None,
+            "email_clarification": None,
+            "email_review_attempts": 0,
+            "email_draft_history": [],
+            "email_selected_score": None,
+        }
+        config = {
+            "configurable": {"thread_id": "parallel-branches-test"}
+        }
+        email_prepared = Event()
+
+        def prepare_email(_state):
+            email_prepared.set()
+            return {
+                "email_subject": "We apologize",
+                "email_body": "We are sorry to hear this.",
+            }
+
+        def notify_internal(_state):
+            self.assertTrue(email_prepared.is_set())
+            return {"internal_notification_status": "sent"}
+
+        with (
+            patch.object(
+                agent,
+                "sentiment_analysis",
+                return_value={"sentiment": "negative"},
+            ),
+            patch.object(
+                agent,
+                "negative_analysis",
+                return_value={"analysis": analysis("P2")},
+            ),
+            patch.object(
+                agent,
+                "prepare_negative_email",
+                side_effect=prepare_email,
+            ),
+            patch.object(
+                agent,
+                "send_internal_notification",
+                side_effect=notify_internal,
+            ),
+        ):
+            graph = agent.agent_manager()
+            graph.invoke(initial_state, config=config)
 
     def test_positive_branch_still_pauses_for_existing_human_review(self):
         initial_state = {
