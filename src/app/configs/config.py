@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import re
 import certifi
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from app.constants.constant import (
     DEFAULT_MANAGER_EMAILS,
@@ -23,6 +23,8 @@ EMAIL_PATTERN = re.compile(
 
 
 class Settings(BaseSettings):
+
+    DATABASE_URL: SecretStr | None = None
 
     # LLM providers
     ENABLE_GEMINI: bool = False

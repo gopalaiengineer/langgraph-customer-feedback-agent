@@ -18,6 +18,7 @@ The goal is to combine useful LLM automation with **deterministic guardrails, ex
 - [Guardrails and safety](#guardrails-and-safety)
 - [Human review and approval](#human-review-and-approval)
 - [Technology stack](#technology-stack)
+- [Database and migrations: step-by-step](#database-and-migrations-step-by-step)
 - [Project structure](#project-structure)
 - [Quick start](#quick-start)
 - [Environment configuration](#environment-configuration)
@@ -44,7 +45,7 @@ The goal is to combine useful LLM automation with **deterministic guardrails, ex
 | Email drafting | Generates a customer-facing email |
 | Human oversight | Allows a reviewer to accept, request evaluation/revision, or stop |
 | Delivery | Sends the accepted email using SMTP |
-| Workflow state | Uses LangGraph checkpoints in memory during the session |
+| Workflow state | Persists LangGraph checkpoints and idempotency records in PostgreSQL |
 
 ## What problem does this project solve?
 
@@ -270,12 +271,203 @@ The review step is important because generated text can be inaccurate, incomplet
 | LangChain | LLM integration and model invocation |
 | Google Gemini | Configured LLM provider used for negative-feedback analysis |
 | Groq | Configured LLM provider used for sentiment and email generation |
-| Pydantic | Structured data models and validation |
-| pydantic-settings | Environment-based application configuration |
+| PostgreSQL | Durable workflow checkpoints, support tickets, and email delivery records |
+| SQLAlchemy 2.x and Psycopg 3 | PostgreSQL access and connection pooling |
+| LangGraph Checkpoint PostgreSQL | Persistent graph checkpointing, including human-review interrupts |
+| Alembic | Versioned database schema migrations |
+| Pydantic and pydantic-settings | Structured data models and environment-based configuration |
 | SMTP | Outbound customer and internal email delivery |
 | `uv` | Dependency and environment management |
 
 Provider usage can be controlled through the application's environment configuration.
+
+## Database and migrations: step-by-step
+
+This project uses PostgreSQL for two related but distinct kinds of persistence:
+
+1. **Application records**: support tickets and email delivery status. These
+   tables are described with SQLAlchemy and created or changed by Alembic.
+2. **Workflow checkpoints**: LangGraph's saved state, including state needed
+   to resume after human approval. LangGraph's PostgreSQL checkpointer manages
+   its own tables.
+
+A missing `support_tickets` table is an application schema/migration issue; a
+workflow that cannot resume a human review is a checkpointer or configuration
+issue. Separating the two makes failures easier to diagnose.
+
+### The real problem this solves
+
+If all information lived only in application memory, a server restart could
+erase a generated ticket or lose a workflow paused while a person reviews an
+email. If two workers processed the same feedback at once, both could create a
+ticket or send the same email. PostgreSQL persists state across restarts and
+uses shared constraints to coordinate workers. The design reduces lost work
+and duplicate side effects; it cannot make an external SMTP server and the
+database one atomic transaction.
+
+### 1. Configure a PostgreSQL connection
+
+Set `DATABASE_URL` in the local `.env` file and keep the real credential out of
+Git:
+
+```dotenv
+DATABASE_URL=postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require
+```
+
+`src/app/configs/config.py` reads this as a secret. In
+`src/app/database/connection.py`, `_database_url()` rejects a missing URL,
+requires PostgreSQL, and normalizes its driver to `postgresql+psycopg`. This
+fails early with a useful message if persistence is not configured.
+
+`get_engine()` creates and caches SQLAlchemy's engine, which reuses a small
+connection pool instead of reconnecting for each query. `pool_pre_ping=True`
+checks pooled connections before reuse to catch stale connections.
+`_get_session_factory()` creates database sessions. `session_scope()` wraps a
+unit of work in a transaction: success commits, exceptions roll back. The
+shutdown hook disposes the pool. `get_checkpointer_url()` formats the same
+database URL for the psycopg interface expected by LangGraph.
+
+### 2. Describe application tables with models
+
+`src/app/database/models.py` is the Python description of the current schema.
+`Base` is the metadata registry Alembic uses to inspect these models.
+
+**`SupportTicketRecord` (`support_tickets`)**
+
+- `thread_id` is the primary key: one workflow thread can have at most one
+  persisted ticket. A retry can reuse its existing ticket.
+- `ticket_id` is required and unique, preventing two rows from sharing a
+  customer/support-facing ticket identifier.
+- `ticket_data` is PostgreSQL `JSONB`, keeping the ticket's structured fields
+  together while allowing PostgreSQL to query JSON values.
+- `created_at` has a database default, so callers do not need to supply a
+  timestamp and all rows use the database clock.
+
+**`EmailDeliveryRecord` (`email_deliveries`)**
+
+- `idempotency_key` is the primary key. A logical email has one delivery
+  record, even when workers race to claim it.
+- `status` tracks `sending`, `sent`, or `failed`. A check constraint rejects
+  invalid values, including spelling mistakes.
+- `error` optionally stores failure details for diagnosis.
+- `created_at` and `updated_at` track when delivery began and last changed.
+
+### 3. Create a versioned migration
+
+Models describe the schema in Python; they do not modify a live database.
+`migrations/versions/20261118_01_create_persistence_tables.py` is the ordered
+instruction Alembic runs to create these tables.
+
+The migration's `revision` is its unique identifier. `down_revision = None`
+means this is currently the first migration in the chain. Alembic stores
+applied revision identifiers in its own version table, so it knows which
+changes are pending.
+
+In `upgrade()`, `op.create_table("support_tickets", ...)` creates the ticket
+columns and constraints. `op.create_table("email_deliveries", ...)` creates
+the delivery record columns and allowed-status constraint. The definitions
+mirror the SQLAlchemy models so a newly migrated database matches what the
+application expects.
+
+In `downgrade()`, Alembic drops `email_deliveries` and then `support_tickets`.
+This reverses table creation, but dropping tables deletes their contents. A
+production rollback should therefore be planned and backed up appropriately.
+
+When the schema changes, update the model and add a new migration. Do not
+rewrite a migration that has already been applied to shared databases: a new
+revision gives every environment the same auditable sequence of changes.
+
+### 4. Configure Alembic
+
+`alembic.ini` points Alembic to `migrations/` and the migration template. The
+URL there is a placeholder. `migrations/env.py` replaces it with the validated
+application URL, avoiding a second copy of the database credential.
+
+`env.py` imports `Base` and sets `target_metadata = Base.metadata`, making the
+models visible to Alembic. `compare_type=True` asks Alembic to compare column
+types when suggesting schema differences. Online mode connects to PostgreSQL
+and applies changes in a transaction. Offline mode renders SQL without
+connecting, useful for review or a DBA workflow. `NullPool` prevents a
+short-lived migration command from keeping an application connection pool.
+
+### 5. Apply the migration
+
+With PostgreSQL running and `.env` configured, run this from the repository
+root:
+
+```bash
+uv run alembic upgrade head
+```
+
+`upgrade` applies pending revisions; `head` means the latest revision in this
+repository. Alembic records the current revision and invokes each migration's
+`upgrade()` function. Running the command again is safe: if the database is
+already at `head`, there are no pending revisions.
+
+To inspect the database revision or repository history:
+
+```bash
+uv run alembic current
+uv run alembic history
+```
+
+`current` reports the revision applied to the configured database; `history`
+lists the migration chain. During deployment, apply migrations before starting
+application code that depends on newly added columns or tables.
+
+### 6. Use repositories for safe operations
+
+`src/app/database/repositories.py` keeps SQL statements out of workflow code
+and exposes operations in terms of the task the app needs to perform.
+
+`SupportTicketRepository.create_or_get()` inserts a ticket with
+`ON CONFLICT DO NOTHING` on `thread_id`, then loads the row for that thread.
+The primary key resolves races: if a graph node retries or two workers create
+the same ticket concurrently, PostgreSQL allows only one row and both can use
+the persisted ticket. If the record cannot be loaded afterward, the repository
+raises an error rather than claiming it was saved.
+
+`EmailDeliveryRepository.claim()` tries to insert a `sending` record. Exactly
+one concurrent worker can create a row for the idempotency key; other workers
+read its existing status and do not claim the same email as new.
+`mark_sent()` and `mark_failed()` record the result and verify that a row was
+updated. Each operation commits through `session_scope()`.
+
+The claim is committed before SMTP is called. If the process crashes after the
+email provider accepts a message but before the database records `sent`, the
+database cannot know whether delivery occurred. This project leaves that
+unresolved `sending` record blocked from automatic retry to avoid a possible
+duplicate. This is a deliberate safety tradeoff, not exactly-once delivery.
+
+### 7. Save and resume LangGraph workflow state
+
+`src/app/database/checkpointer.py` creates a `PostgresSaver` with a psycopg
+connection pool. A lock and cached instance prevent repeated initialization
+inside one process. `checkpointer.setup()` prepares LangGraph's checkpoint
+tables when the checkpointer is first initialized.
+
+Those checkpoint tables are separate from the Alembic-managed application
+tables. They store graph state by thread, so a workflow interrupted for human
+review can resume with its previous analysis and draft after a restart. The
+ticket table stores a business record; the checkpoint tables store resumable
+workflow state. Both use the configured PostgreSQL database but serve
+different purposes.
+
+### Benefits in this project
+
+- **Durability:** ticket records, email outcomes, and workflow checkpoints
+  survive application restarts.
+- **Safer retries:** database keys prevent duplicate tickets and duplicate
+  claims for the same logical email.
+- **Worker coordination:** PostgreSQL constraints handle concurrent attempts
+  across processes, unlike an in-memory check local to one worker.
+- **Repeatable schema changes:** versioned migrations let local, test, and
+  production environments follow the same ordered changes.
+- **Easier troubleshooting:** application records and graph resume state have
+  distinct owners and can be investigated separately.
+
+These mechanisms reduce common failures; backups, secure credentials,
+monitoring, and careful schema deployment are still needed.
 
 ## Project structure
 
@@ -291,11 +483,16 @@ Provider usage can be controlled through the application's environment configura
 │       ├── agents/                 # LangGraph workflow and agent logic
 │       ├── configs/                # Settings and environment validation
 │       ├── constants/              # App defaults and company details
+│       ├── database/               # PostgreSQL connections, models, and repositories
 │       ├── guardrail/              # Deterministic and LLM-based input checks
 │       ├── helpers/                # LLM factory and helper functions
 │       ├── pipelines/              # Workflow entry points
 │       ├── schemas/                # Pydantic state and output models
 │       └── tools/                   # Placeholder/extension area for tools
+├── alembic.ini                     # Alembic configuration
+├── migrations/
+│   ├── env.py                      # Migration environment
+│   └── versions/                   # Versioned database schema changes
 ├── tests/
 │   └── test_priority_escalation.py # Priority and escalation tests
 └── uv.lock                         # Locked dependency versions
@@ -343,7 +540,16 @@ cp .env.example .env
 
 Open `.env` and provide the values required by your setup. See [Environment configuration](#environment-configuration).
 
-### 5. Start the Streamlit application
+### 5. Create or update the PostgreSQL schema
+
+```bash
+uv run alembic upgrade head
+```
+
+The LangGraph PostgreSQL checkpointer initializes its own checkpoint tables when
+the graph is first created.
+
+### 6. Start the Streamlit application
 
 ```bash
 uv run streamlit run main.py
@@ -357,6 +563,7 @@ The application reads configuration from `.env` using `pydantic-settings`.
 
 | Variable | Required | Purpose |
 |---|---|---|
+| `DATABASE_URL` | Yes | PostgreSQL connection URL, for example `postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require` |
 | `ENABLE_GEMINI` | Required for Gemini usage | Enables Google Gemini |
 | `ENABLE_GROQ` | Required for Groq usage | Enables Groq |
 | `GOOGLE_API_KEY` | If Gemini is enabled | Gemini API credential |
@@ -422,9 +629,18 @@ The repository currently includes a priority-escalation test module. Add tests f
 
 The workflow uses LangGraph state to carry customer details, analysis results, priority information, email content, and review decisions between nodes.
 
-The current application uses LangGraph `InMemorySaver` for checkpointing. This supports pauses and resumes during the running application session, but **does not persist checkpoints across application restarts**.
+LangGraph checkpoints are stored in PostgreSQL, so pauses and resumes at the human
+approval `interrupt()` survive process restarts and work across application
+workers using the same database. Application ticket and email-delivery records
+are managed separately through SQLAlchemy repositories and Alembic migrations.
 
-For durable production workflows, consider a persistent LangGraph checkpointer supported by your deployment environment, and define retention, access-control, and recovery policies.
+Ticket rows are unique by `thread_id`, and each generated ticket ID remains
+deterministic. Email delivery claims are unique by idempotency key and committed
+before SMTP is called, preventing concurrent workers from sending the same
+message simultaneously. SMTP is an external system, so a process failure after
+the provider accepts a message but before the database records `sent` cannot be
+made transactionally exactly-once; an unresolved `sending` record is blocked
+from automatic retry to avoid a possible duplicate.
 
 ### Current project boundaries
 
@@ -433,7 +649,8 @@ For durable production workflows, consider a persistent LangGraph checkpointer s
 - Support-team and manager roles receive generated notifications; the current application does not expose inbound free-text forms for those roles.
 - Web search and OpenAI integrations may appear in settings or dependencies, but they are not actively wired into the current graph flow.
 - Email delivery requires valid SMTP configuration and provider permission.
-- In-memory checkpoints are lost when the application process restarts.
+- Keep `DATABASE_URL` in environment-managed secrets and use TLS for remote
+  PostgreSQL connections.
 
 ## Screenshots and visual documentation
 
@@ -475,13 +692,11 @@ Only add screenshots that reflect the current application. Do not create placeho
 
 The following are ideas for future development, not claims about features already implemented:
 
-- Persist LangGraph checkpoints in a production database.
 - Integrate with an external ticketing system such as Jira or Zendesk.
 - Add authentication and role-based access for reviewers.
 - Add audit logs for approval decisions and email delivery.
 - Add observability for graph execution, model latency, retries, and failures.
 - Add automated tests for guardrail bypass attempts and prompt-injection cases.
-- Add idempotent email-delivery handling to reduce duplicate sends.
 - Add a dashboard for feedback volume, sentiment trends, and priority distribution.
 - Add evaluation datasets to measure classification and response quality.
 

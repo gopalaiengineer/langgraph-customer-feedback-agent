@@ -6,6 +6,7 @@ from app.agents import agent
 from app.configs.config import settings
 from app.helpers import helper
 from app.schemas.schema import FeedbackAnalysis
+from langgraph.checkpoint.memory import MemorySaver
 
 
 def analysis(priority: str) -> dict:
@@ -30,8 +31,45 @@ def analysis(priority: str) -> dict:
 
 class PriorityEscalationTests(unittest.TestCase):
     def setUp(self):
-        with agent._DELIVERY_LOCK:
-            agent._DELIVERY_ATTEMPTS.clear()
+        delivery_records = {}
+        ticket_records = {}
+
+        def claim_delivery(idempotency_key):
+            if idempotency_key in delivery_records:
+                return False, delivery_records[idempotency_key]
+            delivery_records[idempotency_key] = ("sending", None)
+            return True, None
+
+        def save_ticket(thread_id, ticket):
+            return ticket_records.setdefault(thread_id, ticket)
+
+        def mark_delivery_sent(idempotency_key):
+            delivery_records[idempotency_key] = ("sent", None)
+
+        def mark_delivery_failed(idempotency_key, error):
+            delivery_records[idempotency_key] = ("failed", error)
+
+        for repository, method, side_effect in (
+            (agent._delivery_repository, "claim", claim_delivery),
+            (agent._delivery_repository, "mark_sent", mark_delivery_sent),
+            (agent._delivery_repository, "mark_failed", mark_delivery_failed),
+            (agent._ticket_repository, "create_or_get", save_ticket),
+        ):
+            patcher = patch.object(
+                repository,
+                method,
+                side_effect=side_effect,
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+        checkpointer = patch.object(
+            agent,
+            "get_checkpointer",
+            return_value=MemorySaver(),
+        )
+        checkpointer.start()
+        self.addCleanup(checkpointer.stop)
 
     def test_priority_router_selects_customer_or_escalation_path(self):
         self.assertEqual(

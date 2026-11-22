@@ -1,20 +1,23 @@
 import smtplib
 from email.message import EmailMessage
-from threading import Lock
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 from langgraph.graph import StateGraph, START, END
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import interrupt
 from langchain_core.runnables import Runnable, RunnableConfig
 from app.helpers.helper import get_llm, get_groq_llm, get_google_llm
 from app.schemas.schema import SentimentAnalysis, FeedbackAnalysis, EmailDraft, FeedbackState
 from app.constants.constant import SUPPORT_CONTACT_DETAILS
 from app.configs.config import settings
+from app.database.checkpointer import get_checkpointer
+from app.database.repositories import (
+    EmailDeliveryRepository,
+    SupportTicketRepository,
+)
 
 
-_DELIVERY_LOCK = Lock()
-_DELIVERY_ATTEMPTS: dict[str, tuple[str, str | None]] = {}
+_delivery_repository = EmailDeliveryRepository()
+_ticket_repository = SupportTicketRepository()
 
 
 def _thread_id_from_config(config: RunnableConfig) -> str:
@@ -29,21 +32,19 @@ def _send_email_once(
     message: EmailMessage,
     recipients: list[str],
 ) -> None:
-    with _DELIVERY_LOCK:
-        prior_attempt = _DELIVERY_ATTEMPTS.get(idempotency_key)
-        if prior_attempt is not None:
-            status, error = prior_attempt
-            if status == "sent":
-                return
-            if status == "sending":
-                raise RuntimeError(
-                    "This email delivery is already in progress."
-                )
-            raise RuntimeError(
-                "A previous email delivery attempt failed and will not be "
-                f"retried automatically: {error}"
-            )
-        _DELIVERY_ATTEMPTS[idempotency_key] = ("sending", None)
+    claimed, prior_attempt = _delivery_repository.claim(idempotency_key)
+    if not claimed:
+        if prior_attempt is None:
+            raise RuntimeError("The email delivery claim could not be loaded.")
+        status, error = prior_attempt
+        if status == "sent":
+            return
+        if status == "sending":
+            raise RuntimeError("This email delivery is already in progress.")
+        raise RuntimeError(
+            "A previous email delivery attempt failed and will not be "
+            f"retried automatically: {error}"
+        )
 
     try:
         with smtplib.SMTP(
@@ -60,15 +61,13 @@ def _send_email_once(
             if refused_recipients:
                 raise smtplib.SMTPRecipientsRefused(refused_recipients)
     except Exception as error:
-        with _DELIVERY_LOCK:
-            _DELIVERY_ATTEMPTS[idempotency_key] = (
-                "failed",
-                f"{type(error).__name__}: {error}",
-            )
+        _delivery_repository.mark_failed(
+            idempotency_key,
+            f"{type(error).__name__}: {error}",
+        )
         raise
 
-    with _DELIVERY_LOCK:
-        _DELIVERY_ATTEMPTS[idempotency_key] = ("sent", None)
+    _delivery_repository.mark_sent(idempotency_key)
 
 
 def _get_llm_groq_structred() -> Runnable:
@@ -219,6 +218,7 @@ def create_support_ticket(state: FeedbackState, config: RunnableConfig):
         "escalation_level": analysis["escalation_level"],
         "escalation_reason": analysis["escalation_reason"],
     }
+    ticket = _ticket_repository.create_or_get(thread_id, ticket)
 
     return {
         "support_ticket": ticket,
@@ -620,7 +620,7 @@ def agent_manager():
         },
     )
     builder.add_edge("send_customer_email", END)
-    graph = builder.compile(checkpointer=InMemorySaver())
+    graph = builder.compile(checkpointer=get_checkpointer())
     return graph
 
 
