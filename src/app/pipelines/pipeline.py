@@ -28,18 +28,18 @@ def customer_feedback_Analysis(
     customer_email: str,
     thread_id: str,
 ) -> FeedbackState:
-    # validation = custom_guardrail(feedback)
-    # if not validation.allowed:
-    #     raise ValueError(
-    #         f"Customer feedback rejected ({validation.category}): "
-    #         f"{validation.reason}"
-    #     )
+    validation = custom_guardrail(feedback)
+    if not validation.allowed:
+        raise ValueError(
+            f"Customer feedback rejected ({validation.category}): "
+            f"{validation.reason}"
+        )
 
-    # llm_validation = llm_guardrail(feedback, audience="customer")
-    # if not llm_validation.allowed:
-    #     raise ValueError(
-    #         llm_validation.safe_response or llm_validation.reason
-    #     )
+    llm_validation = llm_guardrail(feedback, audience="customer")
+    if not llm_validation.allowed:
+        raise ValueError(
+            llm_validation.safe_response or llm_validation.reason
+        )
 
     graph = _get_graph()
     graph_path = Path("customer_feedback_graph.png")
@@ -131,19 +131,18 @@ def resume_customer_feedback_Analysis(
             )
 
         if approval_status == "needs_evaluation":
-            abc = 1
-            # validation = custom_guardrail(
-            #     clarification,
-            #     allowed_keywords=[
-            #         *ALLOWED_KEYWORDS,
-            #         *REVIEW_ALLOWED_KEYWORDS,
-            #     ],
-            # )
-            # if not validation.allowed:
-            #     raise ValueError(
-            #         f"Email review clarification rejected "
-            #         f"({validation.category}): {validation.reason}"
-            #     )
+            validation = custom_guardrail(
+                clarification,
+                allowed_keywords=[
+                    *ALLOWED_KEYWORDS,
+                    *REVIEW_ALLOWED_KEYWORDS,
+                ],
+            )
+            if not validation.allowed:
+                raise ValueError(
+                    f"Email review clarification rejected "
+                    f"({validation.category}): {validation.reason}"
+                )
 
         resume_value = {"approval_status": approval_status}
         if approval_status != "stopped":
