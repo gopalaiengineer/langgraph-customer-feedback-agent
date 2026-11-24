@@ -1,8 +1,13 @@
+from datetime import timedelta
+
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 
 from app.database.connection import session_scope
 from app.database.models import EmailDeliveryRecord, SupportTicketRecord
+
+
+_DELIVERY_CLAIM_TIMEOUT = timedelta(minutes=10)
 
 
 class SupportTicketRepository:
@@ -34,35 +39,167 @@ class SupportTicketRepository:
             return record.ticket_data
 
 
+# class EmailDeliveryRepository:
+#     def claim(
+#         self,
+#         idempotency_key: str,
+#     ) -> tuple[bool, tuple[str, str | None] | None]:
+#         with session_scope() as session:
+#             statement = (
+#                 insert(EmailDeliveryRecord)
+#                 .values(idempotency_key=idempotency_key, status="sending")
+#                 .on_conflict_do_nothing(
+#                     index_elements=["idempotency_key"]
+#                 )
+#             )
+#             result = session.execute(statement)
+#             if result.rowcount == 1:
+#                 return True, None
+
+#             reclaim_statement = (
+#                 update(EmailDeliveryRecord)
+#                 .where(
+#                     EmailDeliveryRecord.idempotency_key == idempotency_key,
+#                     EmailDeliveryRecord.status == "sending",
+#                     EmailDeliveryRecord.updated_at
+#                     < func.now() - _DELIVERY_CLAIM_TIMEOUT,
+#                 )
+#                 .values(
+#                     status="sending",
+#                     error=None,
+#                     updated_at=func.now(),
+#                 )
+#             )
+#             reclaim_result = session.execute(reclaim_statement)
+#             if reclaim_result.rowcount == 1:
+#                 return True, None
+
+#             record = session.get(EmailDeliveryRecord, idempotency_key)
+#             if record is None:
+#                 raise RuntimeError(
+#                     "Email delivery claim could not be loaded."
+#                 )
+#             return False, (record.status, record.error)
+
+#     def mark_sent(self, idempotency_key: str) -> None:
+#         self._update_status(idempotency_key, "sent")
+
+#     def mark_failed(self, idempotency_key: str, error: str) -> None:
+#         self._update_status(idempotency_key, "failed", error)
+
+#     @staticmethod
+#     def _update_status(
+#         idempotency_key: str,
+#         status: str,
+#         error: str | None = None,
+#     ) -> None:
+#         with session_scope() as session:
+#             result = session.execute(
+#                 update(EmailDeliveryRecord)
+#                 .where(
+#                     EmailDeliveryRecord.idempotency_key == idempotency_key
+#                 )
+#                 .values(status=status, error=error, updated_at=func.now())
+#             )
+#             if result.rowcount != 1:
+#                 raise RuntimeError(
+#                     "Email delivery status could not be persisted."
+#                 )
+
+
 class EmailDeliveryRepository:
+
     def claim(
         self,
         idempotency_key: str,
     ) -> tuple[bool, tuple[str, str | None] | None]:
+
         with session_scope() as session:
+
+            # 1. Try to insert a new delivery claim.
             statement = (
                 insert(EmailDeliveryRecord)
-                .values(idempotency_key=idempotency_key, status="sending")
+                .values(
+                    idempotency_key=idempotency_key,
+                    status="sending",
+                    error=None,
+                )
                 .on_conflict_do_nothing(
-                    index_elements=["idempotency_key"]
+                    index_elements=[
+                        EmailDeliveryRecord.idempotency_key
+                    ]
+                )
+                .returning(
+                    EmailDeliveryRecord.idempotency_key
                 )
             )
-            result = session.execute(statement)
-            if result.rowcount == 1:
+
+            inserted_key = session.execute(
+                statement
+            ).scalar_one_or_none()
+
+            if inserted_key is not None:
                 return True, None
 
-            record = session.get(EmailDeliveryRecord, idempotency_key)
+            # 2. Existing claim found.
+            # Try reclaiming an expired sending claim.
+            reclaim_statement = (
+                update(EmailDeliveryRecord)
+                .where(
+                    EmailDeliveryRecord.idempotency_key
+                    == idempotency_key,
+                    EmailDeliveryRecord.status == "sending",
+                    EmailDeliveryRecord.updated_at
+                    < func.now() - _DELIVERY_CLAIM_TIMEOUT,
+                )
+                .values(
+                    status="sending",
+                    error=None,
+                    updated_at=func.now(),
+                )
+                .returning(
+                    EmailDeliveryRecord.idempotency_key
+                )
+            )
+
+            reclaimed_key = session.execute(
+                reclaim_statement
+            ).scalar_one_or_none()
+
+            if reclaimed_key is not None:
+                return True, None
+
+            # 3. Read the existing delivery record.
+            record = session.execute(
+                select(
+                    EmailDeliveryRecord.status,
+                    EmailDeliveryRecord.error,
+                ).where(
+                    EmailDeliveryRecord.idempotency_key
+                    == idempotency_key
+                )
+            ).one_or_none()
+
             if record is None:
                 raise RuntimeError(
                     "Email delivery claim could not be loaded."
                 )
+
             return False, (record.status, record.error)
 
     def mark_sent(self, idempotency_key: str) -> None:
         self._update_status(idempotency_key, "sent")
 
-    def mark_failed(self, idempotency_key: str, error: str) -> None:
-        self._update_status(idempotency_key, "failed", error)
+    def mark_failed(
+        self,
+        idempotency_key: str,
+        error: str,
+    ) -> None:
+        self._update_status(
+            idempotency_key,
+            "failed",
+            error,
+        )
 
     @staticmethod
     def _update_status(
@@ -70,15 +207,31 @@ class EmailDeliveryRepository:
         status: str,
         error: str | None = None,
     ) -> None:
+
         with session_scope() as session:
-            result = session.execute(
+
+            statement = (
                 update(EmailDeliveryRecord)
                 .where(
-                    EmailDeliveryRecord.idempotency_key == idempotency_key
+                    EmailDeliveryRecord.idempotency_key
+                    == idempotency_key
                 )
-                .values(status=status, error=error, updated_at=func.now())
+                .values(
+                    status=status,
+                    error=error,
+                    updated_at=func.now(),
+                )
+                .returning(
+                    EmailDeliveryRecord.idempotency_key
+                )
             )
-            if result.rowcount != 1:
+
+            updated_key = session.execute(
+                statement
+            ).scalar_one_or_none()
+
+            if updated_key is None:
                 raise RuntimeError(
                     "Email delivery status could not be persisted."
                 )
+

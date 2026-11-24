@@ -66,7 +66,7 @@ class Settings(BaseSettings):
     # LangSmith
     LANGSMITH_TRACING: bool = False
     LANGSMITH_API_KEY: str | None = None
-    LANGSMITH_PROJECT: str = "customer-feedback-dev"
+    LANGSMITH_PROJECT: str = "customer-feedback-dev-v01"
 
     model_config = SettingsConfigDict(
         env_file=ENV_PATH,
@@ -134,4 +134,16 @@ class Settings(BaseSettings):
         return self
 
 
+def langsmithconfig(config: Settings) -> None:
+    if config.LANGSMITH_API_KEY:
+        os.environ["LANGSMITH_API_KEY"] = config.LANGSMITH_API_KEY
+    else:
+        os.environ.pop("LANGSMITH_API_KEY", None)
+    os.environ["LANGSMITH_PROJECT"] = config.LANGSMITH_PROJECT
+    os.environ["LANGSMITH_TRACING"] = (
+        "true" if config.LANGSMITH_TRACING else "false"
+    )
+
+
 settings = Settings()
+langsmithconfig(settings)

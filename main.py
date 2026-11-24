@@ -752,17 +752,18 @@ if submitted:
             "Feedback message must contain at least 5 characters."
         )
     else:
-        feedback_validation = custom_guardrail(cleaned_feedback)
-        if not feedback_validation.allowed:
-            feedback_message_error = (
-                f"{feedback_validation.reason} "
-                f"({feedback_validation.category.replace('_', ' ').title()})"
-            )
+        cd=1
+    #     feedback_validation = custom_guardrail(cleaned_feedback)
+    #     if not feedback_validation.allowed:
+    #         feedback_message_error = (
+    #             f"{feedback_validation.reason} "
+    #             f"({feedback_validation.category.replace('_', ' ').title()})"
+    #         )
 
-    if not acknowledge_email:
-        acknowledgement_error = (
-            "Please confirm that you understand the workflow may send a real email."
-        )
+    # if not acknowledge_email:
+    #     acknowledgement_error = (
+    #         "Please confirm that you understand the workflow may send a real email."
+    #     )
 
     if name_error:
         show_field_error(customer_name_error, name_error)
@@ -1173,18 +1174,19 @@ if result:
                     approval_status == "Needs Evaluation"
                     and not clarification_error_message
                 ):
-                    clarification_validation = custom_guardrail(
-                        clarification,
-                        allowed_keywords=[
-                            *ALLOWED_KEYWORDS,
-                            *REVIEW_ALLOWED_KEYWORDS,
-                        ],
-                    )
-                    if not clarification_validation.allowed:
-                        clarification_error_message = (
-                            f"{clarification_validation.reason} "
-                            f"({clarification_validation.category.replace('_', ' ').title()})"
-                        )
+                    c =1;
+                    # clarification_validation = custom_guardrail(
+                    #     clarification,
+                    #     allowed_keywords=[
+                    #         *ALLOWED_KEYWORDS,
+                    #         *REVIEW_ALLOWED_KEYWORDS,
+                    #     ],
+                    # )
+                    # if not clarification_validation.allowed:
+                    #     clarification_error_message = (
+                    #         f"{clarification_validation.reason} "
+                    #         f"({clarification_validation.category.replace('_', ' ').title()})"
+                    #     )
 
                 if approval_error_message:
                     show_field_error(

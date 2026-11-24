@@ -19,7 +19,6 @@ class SupportTicketRecord(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
-    gess: Mapped[str] = mapped_column(String(15), nullable=True)
 
 
 class EmailDeliveryRecord(Base):

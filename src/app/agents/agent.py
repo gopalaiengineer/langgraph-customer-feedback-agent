@@ -1,11 +1,12 @@
 import smtplib
 from email.message import EmailMessage
+import ssl
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
 from langgraph.graph import StateGraph, START, END
 from langgraph.types import interrupt
 from langchain_core.runnables import Runnable, RunnableConfig
-from app.helpers.helper import get_llm, get_groq_llm, get_google_llm
+from app.helpers.helper import console, get_llm, get_groq_llm, get_google_llm
 from app.schemas.schema import SentimentAnalysis, FeedbackAnalysis, EmailDraft, FeedbackState
 from app.constants.constant import SUPPORT_CONTACT_DETAILS
 from app.configs.config import settings
@@ -14,7 +15,6 @@ from app.database.repositories import (
     EmailDeliveryRepository,
     SupportTicketRepository,
 )
-
 
 _delivery_repository = EmailDeliveryRepository()
 _ticket_repository = SupportTicketRepository()
@@ -33,6 +33,7 @@ def _send_email_once(
     recipients: list[str],
 ) -> None:
     claimed, prior_attempt = _delivery_repository.claim(idempotency_key)
+    console.print(f"Email delivery claim for {idempotency_key}: {claimed=}, {prior_attempt=}")
     if not claimed:
         if prior_attempt is None:
             raise RuntimeError("The email delivery claim could not be loaded.")
@@ -52,7 +53,9 @@ def _send_email_once(
             settings.SMTP_PORT,
             timeout=20,
         ) as server:
-            server.starttls()
+            server.ehlo()
+            server.starttls(context=ssl.create_default_context())
+            server.ehlo()
             server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             refused_recipients = server.send_message(
                 message,

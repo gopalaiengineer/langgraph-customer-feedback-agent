@@ -1,6 +1,7 @@
 import unittest
+from email.message import EmailMessage
 from threading import Event
-from unittest.mock import Mock, patch
+from unittest.mock import ANY, MagicMock, Mock, call, patch
 
 from app.agents import agent
 from app.configs.config import settings
@@ -70,6 +71,48 @@ class PriorityEscalationTests(unittest.TestCase):
         )
         checkpointer.start()
         self.addCleanup(checkpointer.stop)
+
+    def test_customer_email_uses_starttls_before_authentication(self):
+        smtp = MagicMock()
+        smtp.__enter__.return_value = smtp
+        smtp.send_message.return_value = {}
+
+        with (
+            patch.object(agent.smtplib, "SMTP", return_value=smtp),
+            patch.object(settings, "SMTP_USER", "sender@example.com"),
+            patch.object(settings, "SMTP_PASSWORD", "test-password"),
+            patch.object(agent._delivery_repository, "mark_sent") as mark_sent,
+        ):
+            agent._send_email_once(
+                "thread:customer-tls-test",
+                EmailMessage(),
+                ["customer@example.com"],
+            )
+
+        mark_sent.assert_called_once_with("thread:customer-tls-test")
+        self.assertLess(
+            smtp.mock_calls.index(call.starttls(context=ANY)),
+            smtp.mock_calls.index(
+                call.login("sender@example.com", "test-password")
+            ),
+        )
+
+    def test_customer_email_is_not_resent_when_already_marked_sent(self):
+        with (
+            patch.object(
+                agent._delivery_repository,
+                "claim",
+                return_value=(False, ("sent", None)),
+            ),
+            patch.object(agent.smtplib, "SMTP") as smtp,
+        ):
+            agent._send_email_once(
+                "thread:customer-already-sent",
+                EmailMessage(),
+                ["customer@example.com"],
+            )
+
+        smtp.assert_not_called()
 
     def test_priority_router_selects_customer_or_escalation_path(self):
         self.assertEqual(
