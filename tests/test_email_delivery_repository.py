@@ -59,6 +59,40 @@ class EmailDeliveryRepositoryTests(unittest.TestCase):
         read_statement = session.execute.call_args_list[2].args[0]
         self.assertIn("email_deliveries.status", str(read_statement))
 
+    def test_status_updates_persist_sent_and_failed_results(self):
+        repository = EmailDeliveryRepository()
+
+        for method, args, expected_status, expected_error in (
+            (repository.mark_sent, ("thread:customer",), "sent", None),
+            (
+                repository.mark_failed,
+                ("thread:customer", "SMTP failure"),
+                "failed",
+                "SMTP failure",
+            ),
+        ):
+            with self.subTest(status=expected_status):
+                session = Mock()
+                session.execute.return_value.scalar_one_or_none.return_value = (
+                    "thread:customer"
+                )
+
+                @contextmanager
+                def scoped_session():
+                    yield session
+
+                with patch(
+                    "app.database.repositories.session_scope",
+                    side_effect=lambda: scoped_session(),
+                ):
+                    method(*args)
+
+                statement = session.execute.call_args.args[0]
+                compiled = statement.compile(dialect=postgresql.dialect())
+                self.assertIn("RETURNING", str(compiled))
+                self.assertIn(expected_status, compiled.params.values())
+                self.assertIn(expected_error, compiled.params.values())
+
     def test_claim_creates_a_new_delivery_record(self):
         session = Mock()
         session.execute.return_value.scalar_one_or_none.return_value = (
@@ -78,8 +112,9 @@ class EmailDeliveryRepositoryTests(unittest.TestCase):
         self.assertEqual(result, (True, None))
         session.execute.assert_called_once()
         statement = session.execute.call_args.args[0]
-        self.assertIn("ON CONFLICT", str(statement.compile(dialect=postgresql.dialect())))
-        self.assertIn("RETURNING", str(statement.compile(dialect=postgresql.dialect())))
+        compiled = statement.compile(dialect=postgresql.dialect())
+        self.assertIn("ON CONFLICT", str(compiled))
+        self.assertIn("RETURNING", str(compiled))
 
 
 if __name__ == "__main__":
