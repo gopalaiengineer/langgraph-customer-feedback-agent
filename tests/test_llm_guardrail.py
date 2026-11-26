@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from app.guardrail import LLMGuardrailResult, llm_guardrail
 
@@ -15,6 +16,26 @@ class FakeStructuredLLM:
 
 
 class LLMGuardrailTests(unittest.TestCase):
+    def test_accepts_generic_feedback_without_project_keywords(self):
+        for text in ("Loved it!", "It was disappointing.", "The service was slow."):
+            with self.subTest(text=text):
+                result = llm_guardrail(
+                    text,
+                    llm=FakeStructuredLLM(
+                        LLMGuardrailResult(
+                            allowed=True,
+                            category="customer_feedback",
+                            reason="The customer is describing their experience.",
+                            risk_flags=[],
+                            confidence=0.95,
+                            safe_response=None,
+                        )
+                    ),
+                )
+
+                self.assertTrue(result.allowed)
+                self.assertEqual(result.category, "customer_feedback")
+
     def test_allowed_customer_feedback(self):
         result = llm_guardrail(
             "My product arrived damaged during delivery.",
@@ -34,19 +55,18 @@ class LLMGuardrailTests(unittest.TestCase):
         self.assertEqual(result.category, "customer_feedback")
 
     def test_rejects_unrelated_question(self):
-        result = llm_guardrail(
-            "What is the capital of India?",
-            llm=FakeStructuredLLM(
-                LLMGuardrailResult(
-                    allowed=False,
-                    category="out_of_scope",
-                    reason="This is not related to the customer feedback workflow.",
-                    risk_flags=["unsupported_topic"],
-                    confidence=0.99,
-                    safe_response="I can help only with the Customer Feedback Management System, including customer feedback analysis, complaints, sentiment analysis, support tickets, priority classification, escalation, and customer email workflows. Please provide a related request.",
-                )
-            ),
+        selected_llm = FakeStructuredLLM(
+            LLMGuardrailResult(
+                allowed=False,
+                category="out_of_scope",
+                reason="This is not related to the customer feedback workflow.",
+                risk_flags=["unsupported_topic"],
+                confidence=0.99,
+                safe_response="I can help only with the Customer Feedback Management System, including customer feedback analysis, complaints, sentiment analysis, support tickets, priority classification, escalation, and customer email workflows. Please provide a related request.",
+            )
         )
+        with patch("app.guardrail.llm_guardrail._select_llm", return_value=selected_llm):
+            result = llm_guardrail("What is the capital of India?")
 
         self.assertFalse(result.allowed)
         self.assertEqual(result.category, "out_of_scope")
@@ -117,6 +137,13 @@ class LLMGuardrailTests(unittest.TestCase):
 
         self.assertFalse(result.allowed)
         self.assertEqual(result.category, "out_of_scope")
+
+    def test_fails_closed_when_llm_is_unavailable(self):
+        with patch("app.guardrail.llm_guardrail._select_llm", side_effect=ValueError):
+            result = llm_guardrail("Loved it!")
+
+        self.assertFalse(result.allowed)
+        self.assertIn("validation_unavailable", result.risk_flags)
 
 
 if __name__ == "__main__":

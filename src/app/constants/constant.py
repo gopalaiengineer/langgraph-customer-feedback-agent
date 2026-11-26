@@ -6,11 +6,10 @@ SUPPORT_CONTACT_DETAILS = {
 }
 
 DEFAULT_SUPPORT_EMAILS = (
-    "support1@example.com",
-    "support2@example.com",
+    "gopal2web.dev@gmail.com",
+    "gopal.2019mean@gmail.com",
 )
 
 DEFAULT_MANAGER_EMAILS = (
-    "manager1@example.com",
-    "manager2@example.com",
+    "mail2gopalphp@gmail.com",
 )

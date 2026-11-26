@@ -1,13 +1,25 @@
 import unittest
 from unittest.mock import Mock, patch
 
+from app.guardrail import LLMGuardrailResult
 from app.pipelines import pipeline
 
 
 class GuardrailIntegrationTests(unittest.TestCase):
-    def test_customer_feedback_is_rejected_before_graph_initialization(self):
-        with patch.object(pipeline, "_get_graph") as get_graph:
-            with self.assertRaisesRegex(ValueError, "No relevant project"):
+    def test_llm_rejects_unrelated_question_before_graph_initialization(self):
+        rejection = LLMGuardrailResult(
+            allowed=False,
+            category="out_of_scope",
+            reason="This is unrelated to customer feedback.",
+            risk_flags=["unsupported_topic"],
+            confidence=0.99,
+            safe_response="This is not related to customer feedback.",
+        )
+        with (
+            patch.object(pipeline, "_get_graph") as get_graph,
+            patch.object(pipeline, "llm_guardrail", return_value=rejection),
+        ):
+            with self.assertRaisesRegex(ValueError, "not related"):
                 pipeline.customer_feedback_Analysis(
                     "What is the capital of India?",
                     "Test Customer",

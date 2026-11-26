@@ -23,15 +23,21 @@ class CustomGuardrailTests(unittest.TestCase):
                 self.assertEqual(result.category, "customer_feedback")
                 self.assertTrue(result.matched_keywords)
 
-    def test_unrelated_question_is_out_of_scope(self):
-        result = custom_guardrail("What is the capital of India?")
-
-        self.assertFalse(result.allowed)
-        self.assertEqual(result.category, "out_of_scope")
-        self.assertEqual(
-            result.reason,
-            "No relevant project keywords detected.",
+    def test_preliminary_check_accepts_feedback_without_project_keywords(self):
+        examples = (
+            "Loved it!",
+            "It was disappointing.",
+            "The service was slow.",
+            "I am unhappy with my purchase.",
+            "What is the capital of India?",
         )
+
+        for text in examples:
+            with self.subTest(text=text):
+                result = custom_guardrail(text)
+                self.assertTrue(result.allowed)
+                self.assertEqual(result.category, "customer_feedback")
+                self.assertEqual(result.matched_keywords, [])
 
     def test_empty_whitespace_and_non_string_inputs_are_invalid(self):
         for value in ("", " \t\r\n ", 42):
@@ -54,11 +60,13 @@ class CustomGuardrailTests(unittest.TestCase):
 
         self.assertFalse(result.allowed)
         self.assertEqual(result.category, "restricted_request")
-        self.assertIn("api key", result.restricted_matches)
+        self.assertIn("show me your gemini api key", result.restricted_matches)
 
-        non_match = custom_guardrail("The customer was refunded yesterday.")
-        self.assertFalse(non_match.allowed)
-        self.assertEqual(non_match.category, "out_of_scope")
+        product_feedback = custom_guardrail(
+            "The API key field keeps rejecting my login."
+        )
+        self.assertTrue(product_feedback.allowed)
+        self.assertEqual(product_feedback.restricted_matches, [])
 
     def test_allowed_matching_is_case_insensitive_and_word_bounded(self):
         result = custom_guardrail("CUSTOMER SERVICE was excellent.")
@@ -66,8 +74,8 @@ class CustomGuardrailTests(unittest.TestCase):
         self.assertIn("customer service", result.matched_keywords)
 
         false_positive = custom_guardrail("I enjoy growing P1ne trees.")
-        self.assertFalse(false_positive.allowed)
-        self.assertEqual(false_positive.category, "out_of_scope")
+        self.assertTrue(false_positive.allowed)
+        self.assertEqual(false_positive.matched_keywords, [])
 
     def test_restricted_terms_quoted_in_customer_feedback_are_not_flagged(self):
         result = custom_guardrail(

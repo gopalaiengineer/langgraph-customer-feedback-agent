@@ -82,7 +82,10 @@ RESTRICTED_KEYWORDS = [
     "internal instructions",
     "reveal secrets",
     "show api key",
-    "api key",
+    "reveal api key",
+    "give me api key",
+    "show me your api key",
+    "show me your gemini api key",
     "show password",
     "database credentials",
     "smtp password",
@@ -258,21 +261,9 @@ def custom_guardrail(
         ALLOWED_KEYWORDS if allowed_keywords is None else allowed_keywords
     )
     matched_keywords = _find_matches(normalized_input, effective_allowed_keywords)
-    if not matched_keywords:
-        return CustomGuardrailResult(
-            allowed=False,
-            reason="No relevant project keywords detected.",
-            matched_keywords=[],
-            restricted_matches=[],
-            category="out_of_scope",
-        )
-
     return CustomGuardrailResult(
         allowed=True,
-        reason=(
-            "Relevant project keywords detected; this preliminary check does "
-            "not confirm the request is safe or in scope."
-        ),
+        reason="Input passed preliminary validation; this check does not confirm the request is safe or in scope.",
         matched_keywords=matched_keywords,
         restricted_matches=[],
         category="customer_feedback",
