@@ -560,9 +560,18 @@ Streamlit will print a local URL in the terminal. Open that URL in your browser.
 ## Environment configuration
 
 The application reads configuration from `.env` using `pydantic-settings`.
+The Streamlit admin login reads `.env` locally and honors process environment
+variables first. `.env.example` contains a default `admin` login; change it
+before use. In production set `APP_ENV=production`, `ADMIN_USERNAME`, and a
+unique `ADMIN_PASSWORD` of at least 16 characters through your deployment's
+secret manager. Production startup fails if these credentials are missing,
+the password is too short, or the development default is still active.
 
 | Variable | Required | Purpose |
 |---|---|---|
+| `APP_ENV` | No | Set to `production` to require explicit admin credentials |
+| `ADMIN_USERNAME` | Production | Admin login name; defaults to `admin` for local development |
+| `ADMIN_PASSWORD` | Production | Admin password; use a unique secret of at least 16 characters |
 | `DATABASE_URL` | Yes | PostgreSQL connection URL, for example `postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require` |
 | `ENABLE_GEMINI` | Required for Gemini usage | Enables Google Gemini |
 | `ENABLE_GROQ` | Required for Groq usage | Enables Groq |
@@ -605,7 +614,34 @@ Expected user journey:
 6. Choose an approval action when prompted.
 7. If accepted, the application sends the email through SMTP.
 
-The exact screen layout depends on the current Streamlit implementation.
+For ticket administration:
+
+1. Select **Admin ticket management** from the sidebar.
+2. Log in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
+3. Review ticket statuses, filter to unresolved tickets, and select a ticket
+   to inspect its customer and issue details.
+4. Choose **Resolve and email customer** or **Reject ticket**.
+5. For resolution, enter the resolution or clarification and confirm the
+   email. The configured LLM drafts a professional response using the ticket
+   summary and admin details; the app sends it to the saved customer address,
+   then marks the ticket resolved and appends the email and resolution to
+   JSONB history.
+6. Rejection changes only the ticket status to `rejected`; it does not generate
+   or send a customer email.
+
+Ticket details and resolution history use the existing PostgreSQL
+`support_tickets.ticket_data` JSONB column. Newly created tickets save the
+customer name and registered email so they can be handled by the admin
+workflow; older tickets without a saved email remain visible and can be
+rejected, but cannot be resolved by sending to an unknown address. Resolution
+email delivery uses the existing LLM, SMTP configuration, and idempotency
+table. A failed or in-progress delivery is not automatically resent to avoid
+duplicate customer email.
+
+Protect production deployments with HTTPS, restrict network access to the
+Streamlit service, and store admin and SMTP credentials in deployment secrets.
+The built-in admin login is a simple internal-app gate, not a substitute for
+an organization-wide identity provider or reverse-proxy access controls.
 
 ## Run tests
 
@@ -643,7 +679,7 @@ never sent.
 Install the test extra if pytest is not already available:
 
 ```powershell
-uv sync --extra test
+uv sync --extra test --extra reports
 ```
 
 Run the isolated unit/integration suite (no external model calls):
@@ -665,8 +701,17 @@ with a structured LLM judge. Compare a run to a saved JSON report using
 `--baseline evaluation/reports/evaluation-<run-id>.json`. Choose a `--version`
 label for each model/prompt version. Reports include prediction scores,
 execution errors, graph node traces, guardrail false acceptance/rejection,
-simulated side-effect counts, and per-case regression details. JSON and CSV
-files are written under `evaluation/reports/`, which is git-ignored.
+simulated side-effect counts, and per-case regression details. Each run writes
+only one combined JSON report and one PDF report under `evaluation/reports/`,
+which is git-ignored. The JSON includes graph and guardrail results, plus
+regression results when a baseline is supplied.
+
+The PDF contains readable metric and guardrail tables, accuracy and execution
+charts, a case-by-case expected-versus-observed explanation, and overall
+performance averages. Overall average accuracy is a macro average of the
+applicable sentiment, intent, category, priority, action, and route metrics.
+Full-case pass rate separately counts cases where every applicable core metric
+passed. The LLM judge average is shown separately on its 1–5 scale.
 
 Folder guide:
 
@@ -677,8 +722,8 @@ Folder guide:
   and mocked SMTP/database operations.
 - `evaluation/metrics.py`, `guardrails.py`, and `judge.py`: deterministic
   metrics, guardrail confusion metrics, and optional LLM scoring.
-- `evaluation/runner.py`, `reports.py`, and `regression.py`: execution,
-  JSON/CSV reports, and version-to-version comparison.
+- `evaluation/runner.py`, `reports.py`, `pdf_report.py`, and `regression.py`:
+  execution, combined JSON/PDF reports, and version-to-version comparison.
 - `tests/test_evaluation_*.py`: offline behavior, graph, failure, and
   concurrency checks.
 
@@ -687,14 +732,17 @@ outputs):
 
 ```json
 {
-  "sentiment_accuracy": {"accuracy": 0.9, "evaluated": 8},
-  "category_accuracy": {"accuracy": 0.8, "evaluated": 6},
-  "conditional_route_accuracy": {"accuracy": 1.0, "evaluated": 8},
+  "overall_performance": {
+    "overall_average_accuracy": 0.93,
+    "averaged_metrics": 6,
+    "fully_correct_cases": 7,
+    "evaluated_cases": 8,
+    "case_pass_rate": 0.875
+  },
+  "sentiment_accuracy": {"accuracy": 1.0, "evaluated": 8},
+  "priority_accuracy": {"accuracy": 0.83, "evaluated": 6},
   "executions": {
-    "total": 8,
-    "completed": 8,
-    "guardrail_rejected": 0,
-    "failed": 0,
+    "total": 8, "completed": 8, "guardrail_rejected": 0, "failed": 0,
     "tool_nodes_available": 0
   }
 }

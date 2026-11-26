@@ -31,12 +31,14 @@ def compare_reports(
         "sentiment_accuracy",
         "intent_accuracy",
         "category_accuracy",
+        "priority_accuracy",
         "action_selection_accuracy",
+        "conditional_route_accuracy",
     )
     changes: dict[str, dict[str, float | None]] = {}
     for metric in metrics:
-        before = baseline.summary[metric]["accuracy"]
-        after = candidate.summary[metric]["accuracy"]
+        before = baseline.summary.get(metric, {}).get("accuracy")
+        after = candidate.summary.get(metric, {}).get("accuracy")
         changes[metric] = {
             "baseline": before,
             "candidate": after,

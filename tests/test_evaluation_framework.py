@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -11,7 +12,8 @@ from evaluation.guardrails import confusion_metrics, evaluate_guardrails
 from evaluation.metrics import score_case
 from evaluation.models import AgentOutput, EvaluationCase
 from evaluation.regression import compare_reports
-from evaluation.reports import write_reports
+from evaluation.pdf_report import write_pdf_report
+from evaluation.reports import build_report_payload, write_json_report
 from evaluation.runner import run_evaluation
 
 
@@ -190,7 +192,7 @@ def test_model_call_opt_in_is_required() -> None:
         LangGraphAgentAdapter(allow_model_calls=False, run_id="test")
 
 
-def test_reports_include_detailed_json_and_csv(tmp_path: Path) -> None:
+def test_reports_include_json_and_readable_pdf_only(tmp_path: Path) -> None:
     case = load_dataset(DATASET / "customer_feedback.json")[0]
     output = AgentOutput(
         state={
@@ -209,8 +211,36 @@ def test_reports_include_detailed_json_and_csv(tmp_path: Path) -> None:
         agent_version="test",
         dataset="synthetic",
     )
-    json_path, csv_path = write_reports(report, tmp_path, "sample")
-    assert '"execution_status": "completed"' in json_path.read_text(encoding="utf-8")
-    assert "case_id,execution_status,execution_error" in csv_path.read_text(
-        encoding="utf-8"
-    )
+    assert report.summary["overall_performance"]["overall_average_accuracy"] == 1.0
+    assert report.summary["overall_performance"]["case_pass_rate"] == 1.0
+    guardrails = {
+        "custom_guardrail": {
+            "true_acceptance": 1,
+            "true_rejection": 0,
+            "false_acceptance": 0,
+            "false_rejection": 0,
+            "accuracy": 1.0,
+            "evaluated": 1,
+        },
+        "llm_guardrail": {
+            "true_acceptance": 1,
+            "true_rejection": 0,
+            "false_acceptance": 0,
+            "false_rejection": 0,
+            "accuracy": 1.0,
+            "evaluated": 1,
+        },
+        "failed_custom_checks": 0,
+        "failed_llm_checks": 0,
+        "cases": [],
+    }
+    payload = build_report_payload(report, guardrails)
+    json_path = write_json_report(payload, tmp_path / "sample.json")
+    pdf_path = write_pdf_report(report, guardrails, tmp_path / "sample.pdf")
+
+    saved_report = json.loads(json_path.read_text(encoding="utf-8"))
+    assert saved_report["evaluation"]["results"][0]["execution_status"] == "completed"
+    assert saved_report["evaluation"]["summary"]["overall_performance"]
+    assert saved_report["guardrails"] == guardrails
+    assert pdf_path.read_bytes().startswith(b"%PDF-")
+    assert {path.suffix for path in tmp_path.iterdir()} == {".json", ".pdf"}

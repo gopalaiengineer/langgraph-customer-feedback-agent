@@ -24,11 +24,18 @@ class FeedbackAnalysis(BaseModel):
         "other",
     ] = Field(description="Category of the customer's issue")
     urgency: Literal["low", "medium", "high", "critical"] = Field(
-        description="How quickly the issue needs attention based on the feedback"
+        description=(
+            "How quickly the issue needs attention. Must match priority: "
+            "P3=low, P2=high, P1=critical."
+        )
     )
     priority: Literal["P3", "P2", "P1"] = Field(
-        description="P3 for minor dissatisfaction, P2 for high-impact issues, "
-        "or P1 for critical complaints"
+        description=(
+            "P3 for minor dissatisfaction, P2 for high-impact issues, or P1 "
+            "for critical complaints. Pair exactly with urgency and "
+            "escalation: P3/low/none, P2/high/support, "
+            "P1/critical/support_and_managers."
+        )
     )
     recommended_action: str = Field(
         description="Recommended next step; do not claim an action has happened"
@@ -37,7 +44,12 @@ class FeedbackAnalysis(BaseModel):
         "none",
         "support",
         "support_and_managers",
-    ] = Field(description="Internal escalation recipients required")
+    ] = Field(
+        description=(
+            "Internal escalation recipients required. Must match priority: "
+            "P3=none, P2=support, P1=support_and_managers."
+        )
+    )
     escalation_reason: str = Field(
         description="Evidence-based reason for the selected escalation level"
     )

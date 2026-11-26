@@ -9,7 +9,8 @@ from typing import Any
 
 from .data import load_dataset, load_guardrail_dataset
 from .models import EvaluationReport
-from .reports import write_guardrail_reports, write_reports
+from .pdf_report import write_pdf_report
+from .reports import build_report_payload, write_json_report
 from .runner import run_evaluation
 
 
@@ -77,27 +78,26 @@ def main() -> int:
             llm=_make_model(),
         )
 
-    json_path, csv_path = write_reports(report, args.output, f"evaluation-{run_id}")
-    guardrail_json, guardrail_csv = write_guardrail_reports(
+    regression = None
+    if args.baseline:
+        baseline_data = json.loads(args.baseline.read_text(encoding="utf-8"))
+        baseline_payload = baseline_data.get("evaluation", baseline_data)
+        baseline = EvaluationReport.model_validate(baseline_payload)
+        from .regression import compare_reports
+
+        regression = compare_reports(baseline, report)
+
+    stem = f"evaluation-{run_id}"
+    json_payload = build_report_payload(report, guardrail_report, regression)
+    json_path = write_json_report(json_payload, args.output / f"{stem}.json")
+    pdf_path = write_pdf_report(
+        report,
         guardrail_report,
-        args.output,
-        f"guardrails-{run_id}",
+        args.output / f"{stem}.pdf",
+        regression=regression,
     )
 
     print(json.dumps(report.summary, indent=2))
     print(f"JSON report: {json_path}")
-    print(f"CSV report: {csv_path}")
-    print(f"Guardrail JSON report: {guardrail_json}")
-    print(f"Guardrail CSV report: {guardrail_csv}")
-
-    if args.baseline:
-        from .regression import compare_reports
-
-        baseline = EvaluationReport.model_validate_json(
-            args.baseline.read_text(encoding="utf-8")
-        )
-        comparison = compare_reports(baseline, report)
-        regression_path = args.output / f"regression-{run_id}.json"
-        regression_path.write_text(json.dumps(comparison, indent=2), encoding="utf-8")
-        print(f"Regression report: {regression_path}")
+    print(f"PDF report: {pdf_path}")
     return 0

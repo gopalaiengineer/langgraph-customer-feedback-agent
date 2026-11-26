@@ -187,6 +187,7 @@ class LangGraphAgentAdapter:
             "sentiment": final_state.get("sentiment"),
             "category": category,
             "intent": predicted_intent,
+            "priority": (final_state.get("analysis") or {}).get("priority"),
         }
         final_state["_evaluation_prediction"] = predicted
         return AgentOutput(
