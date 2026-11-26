@@ -1,0 +1,122 @@
+[
+  {
+    "id": "positive-fast-delivery",
+    "input": {
+      "customer_name": "Avery Morgan",
+      "customer_email": "avery@example.test",
+      "feedback": "My order arrived earlier than expected and the product is excellent. Thank you for the great service."
+    },
+    "expected": {
+      "sentiment": "positive",
+      "category": null,
+      "intent": "positive_feedback",
+      "priority": null,
+      "actions": ["prepare_positive_email"]
+    }
+  },
+  {
+    "id": "minor-delivery-delay",
+    "input": {
+      "customer_name": "Jordan Lee",
+      "customer_email": "jordan@example.test",
+      "feedback": "The parcel was one day late, but it arrived safely. I wanted to mention the delay."
+    },
+    "expected": {
+      "sentiment": "negative",
+      "category": "delivery",
+      "intent": "delivery_complaint",
+      "priority": "P3",
+      "actions": ["prepare_negative_email"]
+    }
+  },
+  {
+    "id": "damaged-product",
+    "input": {
+      "customer_name": "Casey Rivera",
+      "customer_email": "casey@example.test",
+      "feedback": "The item arrived cracked and cannot be used. Please help me get a replacement."
+    },
+    "expected": {
+      "sentiment": "negative",
+      "category": "product_quality",
+      "intent": "product_quality_complaint",
+      "priority": "P2",
+      "actions": ["create_support_ticket", "send_internal_notification", "prepare_negative_email"]
+    }
+  },
+  {
+    "id": "repeated-billing-error",
+    "input": {
+      "customer_name": "Taylor Brooks",
+      "customer_email": "taylor@example.test",
+      "feedback": "I have been charged twice this month after contacting support about the same billing problem. I need the duplicate charge reviewed."
+    },
+    "expected": {
+      "sentiment": "negative",
+      "category": "billing",
+      "intent": "billing_complaint",
+      "priority": "P1",
+      "actions": ["create_support_ticket", "send_internal_notification", "prepare_negative_email"]
+    }
+  },
+  {
+    "id": "technical-login-issue",
+    "input": {
+      "customer_name": "Riley Chen",
+      "customer_email": "riley@example.test",
+      "feedback": "I cannot sign in since yesterday's update, so I cannot access my account. Could technical support look into this?"
+    },
+    "expected": {
+      "sentiment": "negative",
+      "category": "technical_support",
+      "intent": "technical_support_complaint",
+      "priority": "P2",
+      "actions": ["create_support_ticket", "send_internal_notification", "prepare_negative_email"]
+    }
+  },
+  {
+    "id": "refund-dispute",
+    "input": {
+      "customer_name": "Sam Patel",
+      "customer_email": "sam@example.test",
+      "feedback": "I returned the order two weeks ago and still have not received the refund. This has happened before and I need this resolved."
+    },
+    "expected": {
+      "sentiment": "negative",
+      "category": "refund",
+      "intent": "refund_request",
+      "priority": "P1",
+      "actions": ["create_support_ticket", "send_internal_notification", "prepare_negative_email"]
+    }
+  },
+  {
+    "id": "support-agent-experience",
+    "input": {
+      "customer_name": "Morgan Ellis",
+      "customer_email": "morgan@example.test",
+      "feedback": "The support representative was dismissive and did not answer my question. I am disappointed with the service."
+    },
+    "expected": {
+      "sentiment": "negative",
+      "category": "customer_service",
+      "intent": "customer_service_complaint",
+      "priority": "P2",
+      "actions": ["create_support_ticket", "send_internal_notification", "prepare_negative_email"]
+    }
+  },
+  {
+    "id": "general-positive-feedback",
+    "input": {
+      "customer_name": "Jamie Park",
+      "customer_email": "jamie@example.test",
+      "feedback": "Everything worked smoothly and the instructions were easy to follow. I am very happy with my experience."
+    },
+    "expected": {
+      "sentiment": "positive",
+      "category": null,
+      "intent": "positive_feedback",
+      "priority": null,
+      "actions": ["prepare_positive_email"]
+    }
+  }
+]

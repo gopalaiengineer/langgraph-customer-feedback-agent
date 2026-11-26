@@ -17,6 +17,9 @@ venv/
 # IDE
 .vscode/
 
+# Evaluation outputs may contain model-generated text.
+evaluation/reports/
+
 # OS
 .DS_Store
 Thumbs.db
