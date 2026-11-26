@@ -1,15 +1,22 @@
 """Streamlit UI for the LangGraph customer feedback analysis workflow."""
 
 import html
+import hmac
 import json
+import os
 import re
+import time
 import uuid
 
 import streamlit as st
+from dotenv import load_dotenv
 
 from src.app.pipelines.pipeline import (
     customer_feedback_Analysis,
+    list_support_tickets,
+    reject_support_ticket,
     resume_customer_feedback_Analysis,
+    resolve_support_ticket,
 )
 from src.app.configs.config import settings
 from src.app.guardrail import (
@@ -17,6 +24,28 @@ from src.app.guardrail import (
     REVIEW_ALLOWED_KEYWORDS,
     custom_guardrail,
 )
+
+load_dotenv(override=False)
+
+DEFAULT_ADMIN_USERNAME = "admin"
+DEFAULT_ADMIN_PASSWORD = "change-this-admin-password"
+ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", DEFAULT_ADMIN_USERNAME).strip()
+ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", DEFAULT_ADMIN_PASSWORD)
+ADMIN_SESSION_TTL_SECONDS = 30 * 60
+APP_ENV = os.getenv("APP_ENV", "development").strip().lower()
+if not ADMIN_PASSWORD:
+    raise RuntimeError("ADMIN_PASSWORD must not be empty.")
+if APP_ENV == "production":
+    if not os.getenv("ADMIN_USERNAME", "").strip() or not os.getenv(
+        "ADMIN_PASSWORD", ""
+    ):
+        raise RuntimeError(
+            "ADMIN_USERNAME and ADMIN_PASSWORD must be set in production."
+        )
+    if len(ADMIN_PASSWORD) < 16 or ADMIN_PASSWORD == DEFAULT_ADMIN_PASSWORD:
+        raise RuntimeError(
+            "Set a unique ADMIN_PASSWORD of at least 16 characters in production."
+        )
 
 
 # --------------------------------------------------
@@ -574,6 +603,260 @@ def valid_email(email):
     )
 
 
+def admin_is_authenticated():
+    if not st.session_state.get("admin_authenticated"):
+        return False
+    last_activity = st.session_state.get("admin_last_activity", 0)
+    if time.time() - last_activity > ADMIN_SESSION_TTL_SECONDS:
+        st.session_state.pop("admin_authenticated", None)
+        st.session_state.pop("admin_username", None)
+        st.session_state.pop("admin_last_activity", None)
+        return False
+    st.session_state["admin_last_activity"] = time.time()
+    return True
+
+
+def render_admin_dashboard():
+    st.markdown(
+        """
+        <div class="hero">
+            <div class="hero-tag">Restricted access</div>
+            <h1>Support ticket management</h1>
+            <p>Review unresolved customer tickets and send a resolution update.</p>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if not admin_is_authenticated():
+        if ADMIN_PASSWORD == DEFAULT_ADMIN_PASSWORD:
+            st.warning(
+                "The local default admin password is active. Set "
+                "`ADMIN_USERNAME` and `ADMIN_PASSWORD` in the deployment "
+                "environment before exposing this app."
+            )
+        with st.form("admin_login_form"):
+            username = st.text_input("Admin username", max_chars=128)
+            password = st.text_input(
+                "Admin password",
+                type="password",
+                max_chars=1024,
+            )
+            login_submitted = st.form_submit_button("Log in")
+        if login_submitted:
+            username_matches = hmac.compare_digest(
+                username.encode("utf-8"),
+                ADMIN_USERNAME.encode("utf-8"),
+            )
+            password_matches = hmac.compare_digest(
+                password.encode("utf-8"),
+                ADMIN_PASSWORD.encode("utf-8"),
+            )
+            if username_matches and password_matches:
+                st.session_state["admin_authenticated"] = True
+                st.session_state["admin_username"] = ADMIN_USERNAME
+                st.session_state["admin_last_activity"] = time.time()
+                st.rerun()
+            st.error("Invalid username or password.")
+        return
+
+    admin_username = st.session_state["admin_username"]
+    title_col, logout_col = st.columns([4, 1])
+    with title_col:
+        st.caption(f"Signed in as {admin_username}")
+    with logout_col:
+        if st.button("Log out", use_container_width=True):
+            st.session_state.pop("admin_authenticated", None)
+            st.session_state.pop("admin_username", None)
+            st.session_state.pop("admin_last_activity", None)
+            st.rerun()
+
+    try:
+        tickets = list_support_tickets()
+    except Exception as exc:
+        st.error("Support tickets could not be loaded from the database.")
+        st.exception(exc)
+        return
+
+    unresolved_tickets = [
+        ticket for ticket in tickets
+        if str(ticket.get("status", "open")).lower()
+        not in {"resolved", "rejected"}
+    ]
+    metric_col1, metric_col2 = st.columns(2)
+    metric_col1.metric("All tickets", len(tickets))
+    metric_col2.metric("Unresolved", len(unresolved_tickets))
+
+    show_unresolved_only = st.checkbox(
+        "Show unresolved tickets only",
+        value=False,
+    )
+    visible_tickets = unresolved_tickets if show_unresolved_only else tickets
+    st.dataframe(
+        [
+            {
+                "Ticket": ticket.get("ticket_id", "Unknown"),
+                "Status": ticket.get("status", "open"),
+                "Priority": ticket.get("priority", "Unknown"),
+                "Customer": ticket.get("customer_name", "Not available"),
+                "Summary": ticket.get("summary", "Not available"),
+                "Created": ticket.get("created_at", "Not available"),
+            }
+            for ticket in visible_tickets
+        ],
+        hide_index=True,
+        use_container_width=True,
+    )
+
+    if not visible_tickets:
+        st.info("There are no tickets matching this view.")
+        return
+
+    ticket_by_id = {ticket["ticket_id"]: ticket for ticket in visible_tickets}
+    selected_ticket_id = st.selectbox(
+        "View ticket details",
+        options=list(ticket_by_id),
+        format_func=lambda ticket_id: (
+            f"{ticket_id} — {ticket_by_id[ticket_id].get('status', 'open')}"
+        ),
+    )
+    selected_ticket = ticket_by_id[selected_ticket_id]
+    st.markdown("### Ticket details")
+    detail_col, summary_col = st.columns(2)
+    with detail_col:
+        st.write(
+            "**Customer:**",
+            selected_ticket.get("customer_name", "Not available"),
+        )
+        st.write(
+            "**Email:**",
+            selected_ticket.get("customer_email", "Not available"),
+        )
+        st.write(
+            "**Priority:**",
+            selected_ticket.get("priority", "Not available"),
+        )
+        st.write(
+            "**Issue category:**",
+            selected_ticket.get("issue_category", "Not available"),
+        )
+    with summary_col:
+        st.write("**Status:**", selected_ticket.get("status", "open"))
+        st.write(
+            "**Recommended action:**",
+            selected_ticket.get("recommended_action", "Not available"),
+        )
+        st.write(
+            "**Escalation reason:**",
+            selected_ticket.get("escalation_reason", "Not available"),
+        )
+        st.write("**Summary:**", selected_ticket.get("summary", "Not available"))
+
+    resolution_history = selected_ticket.get("resolution_history", [])
+    if resolution_history:
+        st.markdown("#### Resolution history")
+        st.dataframe(resolution_history, hide_index=True, use_container_width=True)
+
+    ticket_status = str(selected_ticket.get("status", "open")).lower()
+    if ticket_status == "resolved":
+        st.success("This ticket is resolved.")
+        return
+
+    if ticket_status == "rejected":
+        st.info("This ticket was rejected. No customer email was sent.")
+        return
+
+    pending_resolution = selected_ticket.get("resolution_pending")
+    if pending_resolution:
+        st.warning(
+            "A resolution email is pending. Re-submit the same resolution to "
+            "continue; rejection is unavailable while delivery is pending."
+        )
+
+    action = st.radio(
+        "Ticket action",
+        options=("Resolve and email customer", "Reject ticket"),
+        key=f"ticket_action_{selected_ticket_id}",
+        disabled=bool(pending_resolution),
+    )
+
+    if action == "Reject ticket":
+        st.warning(
+            "Rejecting changes the ticket status only. No email will be sent."
+        )
+        with st.form(f"reject_ticket_form_{selected_ticket_id}"):
+            confirm_rejection = st.checkbox(
+                "I confirm that this ticket should be rejected."
+            )
+            reject_submitted = st.form_submit_button(
+                "Reject ticket",
+                use_container_width=True,
+            )
+
+        if reject_submitted:
+            if not confirm_rejection:
+                st.error("Confirm before rejecting the ticket.")
+            else:
+                try:
+                    reject_support_ticket(selected_ticket_id)
+                except Exception as exc:
+                    st.error("The ticket could not be rejected.")
+                    st.exception(exc)
+                else:
+                    st.success("Ticket rejected. No customer email was sent.")
+                    st.rerun()
+        return
+
+    if not selected_ticket.get("customer_email"):
+        st.warning(
+            "This ticket has no registered customer email address. "
+            "It cannot be resolved through this workflow, but it can be rejected."
+        )
+        return
+
+    with st.form(f"resolve_ticket_form_{selected_ticket_id}"):
+        resolution_reason = st.text_area(
+            "Resolution reason or clarification",
+            value=(pending_resolution or {}).get("reason", ""),
+            max_chars=4000,
+            disabled=bool(pending_resolution),
+            placeholder="Explain what was done or clarify the outcome for the customer.",
+        )
+        confirm_email = st.checkbox(
+            "Send the LLM-generated resolution email to the customer's registered address."
+        )
+        resolve_submitted = st.form_submit_button(
+            "Resolve ticket and send email",
+            type="primary",
+            use_container_width=True,
+        )
+
+    if resolve_submitted:
+        if not resolution_reason.strip():
+            st.error("Enter a resolution reason or clarification.")
+        elif not confirm_email:
+            st.error("Confirm before sending the customer email.")
+        else:
+            try:
+                with st.spinner(
+                    "Generating the resolution email, sending it, and updating the ticket..."
+                ):
+                    resolve_support_ticket(
+                        selected_ticket_id,
+                        resolution_reason,
+                        admin_username,
+                    )
+            except Exception as exc:
+                st.error(
+                    "The ticket could not be resolved. Check the LLM, email, "
+                    "and database configuration before trying again."
+                )
+                st.exception(exc)
+            else:
+                st.success("Resolution email sent and ticket marked resolved.")
+                st.rerun()
+
+
 # --------------------------------------------------
 # SIDEBAR
 # --------------------------------------------------
@@ -614,6 +897,17 @@ with st.sidebar:
     )
     st.divider()
     st.caption("AI-powered customer feedback automation")
+
+    selected_page = st.radio(
+        "Workspace",
+        options=("Customer feedback", "Admin ticket management"),
+        index=0,
+    )
+
+
+if selected_page == "Admin ticket management":
+    render_admin_dashboard()
+    st.stop()
 
 
 # --------------------------------------------------

@@ -6,7 +6,8 @@ from unittest.mock import ANY, MagicMock, Mock, call, patch
 from app.agents import agent
 from app.configs.config import settings
 from app.helpers import helper
-from app.schemas.schema import FeedbackAnalysis
+from app.schemas.schema import EmailDraft, FeedbackAnalysis
+from langchain_core.exceptions import OutputParserException
 from langgraph.checkpoint.memory import MemorySaver
 
 
@@ -142,6 +143,47 @@ class PriorityEscalationTests(unittest.TestCase):
 
         self.assertEqual(parsed.urgency, "high")
         self.assertEqual(parsed.severity, "critical")
+
+    def test_negative_analysis_retries_invalid_priority_tuple_once(self):
+        llm = Mock()
+        llm.invoke.side_effect = [
+            OutputParserException(
+                "P2 urgency must be high",
+                llm_output='{"priority": "P2", "urgency": "medium"}',
+            ),
+            FeedbackAnalysis(**analysis("P2")),
+        ]
+        with patch.object(agent, "_get_llm_gemini_structred", return_value=llm):
+            result = agent.negative_analysis(
+                {"feedback": "The product defect is still unresolved."}
+            )
+
+        self.assertEqual(result["analysis"]["urgency"], "high")
+        self.assertEqual(llm.invoke.call_count, 2)
+
+    def test_ticket_resolution_email_is_generated_from_ticket_and_resolution(self):
+        llm = Mock()
+        llm.invoke.return_value = EmailDraft(
+            subject="Your support ticket update",
+            body="The issue has been addressed.",
+        )
+        with patch.object(
+            agent,
+            "_get_llm_email_draft_structured",
+            return_value=llm,
+        ):
+            draft = agent.draft_ticket_resolution_email(
+                "FB-123456789ABC",
+                "Alex Customer",
+                "The replacement order was delayed.",
+                "We shipped a replacement order.",
+            )
+
+        self.assertEqual(draft.subject, "Your support ticket update")
+        messages = llm.invoke.call_args.args[0]
+        self.assertIn("The replacement order was delayed.", messages[1][1])
+        self.assertIn("We shipped a replacement order.", messages[1][1])
+        self.assertIn("Do not invent actions", messages[0][1])
 
     def test_existing_review_limit_is_configurable_without_changing_flow(self):
         state = {"approval_status": "needs_evaluation", "email_review_attempts": 0}

@@ -560,9 +560,18 @@ Streamlit will print a local URL in the terminal. Open that URL in your browser.
 ## Environment configuration
 
 The application reads configuration from `.env` using `pydantic-settings`.
+The Streamlit admin login reads `.env` locally and honors process environment
+variables first. `.env.example` contains a default `admin` login; change it
+before use. In production set `APP_ENV=production`, `ADMIN_USERNAME`, and a
+unique `ADMIN_PASSWORD` of at least 16 characters through your deployment's
+secret manager. Production startup fails if these credentials are missing,
+the password is too short, or the development default is still active.
 
 | Variable | Required | Purpose |
 |---|---|---|
+| `APP_ENV` | No | Set to `production` to require explicit admin credentials |
+| `ADMIN_USERNAME` | Production | Admin login name; defaults to `admin` for local development |
+| `ADMIN_PASSWORD` | Production | Admin password; use a unique secret of at least 16 characters |
 | `DATABASE_URL` | Yes | PostgreSQL connection URL, for example `postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require` |
 | `ENABLE_GEMINI` | Required for Gemini usage | Enables Google Gemini |
 | `ENABLE_GROQ` | Required for Groq usage | Enables Groq |
@@ -605,7 +614,34 @@ Expected user journey:
 6. Choose an approval action when prompted.
 7. If accepted, the application sends the email through SMTP.
 
-The exact screen layout depends on the current Streamlit implementation.
+For ticket administration:
+
+1. Select **Admin ticket management** from the sidebar.
+2. Log in with `ADMIN_USERNAME` and `ADMIN_PASSWORD`.
+3. Review ticket statuses, filter to unresolved tickets, and select a ticket
+   to inspect its customer and issue details.
+4. Choose **Resolve and email customer** or **Reject ticket**.
+5. For resolution, enter the resolution or clarification and confirm the
+   email. The configured LLM drafts a professional response using the ticket
+   summary and admin details; the app sends it to the saved customer address,
+   then marks the ticket resolved and appends the email and resolution to
+   JSONB history.
+6. Rejection changes only the ticket status to `rejected`; it does not generate
+   or send a customer email.
+
+Ticket details and resolution history use the existing PostgreSQL
+`support_tickets.ticket_data` JSONB column. Newly created tickets save the
+customer name and registered email so they can be handled by the admin
+workflow; older tickets without a saved email remain visible and can be
+rejected, but cannot be resolved by sending to an unknown address. Resolution
+email delivery uses the existing LLM, SMTP configuration, and idempotency
+table. A failed or in-progress delivery is not automatically resent to avoid
+duplicate customer email.
+
+Protect production deployments with HTTPS, restrict network access to the
+Streamlit service, and store admin and SMTP credentials in deployment secrets.
+The built-in admin login is a simple internal-app gate, not a substitute for
+an organization-wide identity provider or reverse-proxy access controls.
 
 ## Run tests
 

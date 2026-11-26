@@ -1,7 +1,13 @@
-from pathlib import Path
+import re
 from functools import lru_cache
+from pathlib import Path
+
 from langgraph.types import Command
-from app.agents.agent import agent_manager
+from app.agents.agent import (
+    agent_manager,
+    draft_ticket_resolution_email,
+    send_ticket_resolution_email,
+)
 from app.guardrail import (
     ALLOWED_KEYWORDS,
     REVIEW_ALLOWED_KEYWORDS,
@@ -9,6 +15,14 @@ from app.guardrail import (
     llm_guardrail,
 )
 from app.schemas.schema import FeedbackState
+from app.database.repositories import SupportTicketRepository
+
+_ticket_repository = SupportTicketRepository()
+_EMAIL_PATTERN = re.compile(
+    r"[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@"
+    r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+    r"(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+"
+)
 
 
 @lru_cache(maxsize=1)
@@ -160,3 +174,104 @@ def resume_customer_feedback_Analysis(
         config=config,
     )
     return graph.get_state(config).values
+
+
+def list_support_tickets() -> list[dict]:
+    return _ticket_repository.list_all()
+
+
+def build_ticket_resolution_email(
+    ticket_id: str,
+    ticket_data: dict,
+    resolution_reason: str,
+) -> tuple[str, str, str]:
+    customer_name = (
+        str(ticket_data.get("customer_name", "")).strip() or "Customer"
+    )
+    customer_email = _ticket_customer_email(ticket_data)
+    summary = str(ticket_data.get("summary", "")).strip()
+    if not summary:
+        raise ValueError("This ticket has no summary to include in the email.")
+
+    draft = draft_ticket_resolution_email(
+        ticket_id,
+        customer_name,
+        summary,
+        resolution_reason,
+    )
+    return customer_email, draft.subject, draft.body
+
+
+def _ticket_customer_email(ticket_data: dict) -> str:
+    customer_email = str(ticket_data.get("customer_email", "")).strip()
+    if not customer_email or not _EMAIL_PATTERN.fullmatch(customer_email):
+        raise ValueError(
+            "This ticket has no valid registered customer email address."
+        )
+    return customer_email
+
+
+def resolve_support_ticket(
+    ticket_id: str,
+    resolution_reason: str,
+    admin_username: str,
+) -> dict:
+    reason = resolution_reason.strip()
+    if not reason:
+        raise ValueError("Enter a resolution reason or clarification.")
+    if len(reason) > 4000:
+        raise ValueError("Resolution details must be 4,000 characters or fewer.")
+
+    ticket = _ticket_repository.get_by_ticket_id(ticket_id)
+    if ticket is None:
+        raise LookupError("The requested support ticket could not be found.")
+
+    data = ticket["ticket_data"]
+    if data.get("status") in {"resolved", "rejected"}:
+        raise ValueError(
+            f"This support ticket has already been {data['status']}."
+        )
+    customer_email = _ticket_customer_email(data)
+    pending = data.get("resolution_pending")
+    if pending is not None:
+        if pending.get("reason") != reason:
+            raise ValueError(
+                "A different resolution is already pending for this ticket."
+            )
+        subject = pending["email_subject"]
+        body = pending["email_body"]
+    else:
+        customer_email, subject, body = build_ticket_resolution_email(
+            ticket_id,
+            data,
+            reason,
+        )
+
+    pending = _ticket_repository.begin_resolution(
+        ticket["thread_id"],
+        reason,
+        subject,
+        body,
+    )
+
+    send_ticket_resolution_email(
+        ticket["thread_id"],
+        ticket_id,
+        customer_email,
+        pending["email_subject"],
+        pending["email_body"],
+    )
+    return _ticket_repository.mark_resolved(
+        ticket["thread_id"],
+        pending["reason"],
+        admin_username,
+        pending["email_subject"],
+        pending["email_body"],
+    )
+
+
+def reject_support_ticket(ticket_id: str) -> dict:
+    ticket = _ticket_repository.get_by_ticket_id(ticket_id)
+    if ticket is None:
+        raise LookupError("The requested support ticket could not be found.")
+    return _ticket_repository.mark_rejected(ticket["thread_id"])

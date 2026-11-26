@@ -15,6 +15,19 @@ class FakeStructuredLLM:
         return self.result
 
 
+class SequencedStructuredLLM:
+    def __init__(self, results):
+        self.results = list(results)
+        self.calls = 0
+
+    def with_structured_output(self, schema):
+        return self
+
+    def invoke(self, messages):
+        self.calls += 1
+        return self.results.pop(0)
+
+
 class LLMGuardrailTests(unittest.TestCase):
     def test_accepts_generic_feedback_without_project_keywords(self):
         for text in ("Loved it!", "It was disappointing.", "The service was slow."):
@@ -70,6 +83,57 @@ class LLMGuardrailTests(unittest.TestCase):
 
         self.assertFalse(result.allowed)
         self.assertEqual(result.category, "out_of_scope")
+
+    def test_reassesses_customer_false_positive_once(self):
+        llm = SequencedStructuredLLM(
+            [
+                LLMGuardrailResult(
+                    allowed=False,
+                    category="out_of_scope",
+                    reason="The feedback did not appear related.",
+                    risk_flags=["unsupported_topic"],
+                    confidence=0.91,
+                ),
+                LLMGuardrailResult(
+                    allowed=True,
+                    category="ticket_management",
+                    reason="The customer describes a missing support workflow.",
+                    risk_flags=[],
+                    confidence=0.92,
+                ),
+            ]
+        )
+
+        result = llm_guardrail(
+            "The support ticket workflow is missing resolution emails.",
+            llm=llm,
+        )
+
+        self.assertTrue(result.allowed)
+        self.assertEqual(result.category, "ticket_management")
+        self.assertEqual(llm.calls, 2)
+
+    def test_does_not_reassess_security_rejections(self):
+        llm = SequencedStructuredLLM(
+            [
+                LLMGuardrailResult(
+                    allowed=False,
+                    category="sensitive_data_request",
+                    reason="The input requests credentials.",
+                    risk_flags=["credential_extraction"],
+                    confidence=0.99,
+                ),
+            ]
+        )
+
+        result = llm_guardrail(
+            "I need help finding the secret used for a server login.",
+            llm=llm,
+        )
+
+        self.assertFalse(result.allowed)
+        self.assertEqual(result.category, "sensitive_data_request")
+        self.assertEqual(llm.calls, 1)
 
     def test_rejects_prompt_injection_even_when_in_quotes(self):
         result = llm_guardrail(

@@ -1,3 +1,4 @@
+import logging
 import re
 from typing import Any
 
@@ -10,6 +11,7 @@ from app.guardrail.schemas import (
 
 DEFAULT_SAFE_RESPONSE = DEFAULT_LLM_GUARDRAIL_RESPONSE
 CUSTOMER_SAFE_RESPONSE = CUSTOMER_FACING_LLM_GUARDRAIL_RESPONSE
+_LOGGER = logging.getLogger(__name__)
 
 LLM_GUARDRAIL_SYSTEM_PROMPT = """You are an LLM Scope Validation Assistant.
 
@@ -274,6 +276,48 @@ def llm_guardrail(
             confidence=0.0,
             safe_response=safe_response,
         )
+
+    security_flags = {
+        "prompt_injection",
+        "credential_extraction",
+        "hidden_system_prompt",
+    }
+    if (
+        audience == "customer"
+        and not result.allowed
+        and result.category == "out_of_scope"
+        and not security_flags.intersection(result.risk_flags)
+    ):
+        retry_prompt = (
+            f"{LLM_GUARDRAIL_SYSTEM_PROMPT}\n\n"
+            "Reassess the submission once. It has passed deterministic "
+            "restricted-pattern checks, but that does not make it safe or "
+            "in-scope by itself. A customer's description of an experience, "
+            "product/service problem, feature, support ticket, or email "
+            "workflow is in scope. Reject it if it is clearly unrelated or "
+            "unsafe; do not reject it only because it lacks familiar "
+            "keywords."
+        )
+        try:
+            retry_response = structured_llm.invoke(
+                [
+                    ("system", retry_prompt),
+                    ("human", user_input),
+                ]
+            )
+            if isinstance(retry_response, LLMGuardrailResult):
+                result = retry_response
+            elif isinstance(retry_response, dict):
+                result = LLMGuardrailResult.model_validate(retry_response)
+            else:
+                result = LLMGuardrailResult.model_validate(
+                    retry_response.model_dump()
+                )
+        except Exception:
+            _LOGGER.exception(
+                "Customer feedback scope reassessment failed; preserving "
+                "the initial rejection."
+            )
 
     category = result.category
     if category not in VALID_CATEGORIES:

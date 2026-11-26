@@ -1,4 +1,4 @@
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
@@ -37,6 +37,157 @@ class SupportTicketRepository:
                     "Ticket persistence failed for the requested thread."
                 )
             return record.ticket_data
+
+    def list_all(self) -> list[dict]:
+        with session_scope() as session:
+            records = session.scalars(
+                select(SupportTicketRecord).order_by(
+                    SupportTicketRecord.created_at.desc()
+                )
+            ).all()
+            return [
+                {
+                    **record.ticket_data,
+                    "thread_id": record.thread_id,
+                    "ticket_id": record.ticket_id,
+                    "created_at": record.created_at.isoformat(),
+                }
+                for record in records
+            ]
+
+    def get_by_ticket_id(self, ticket_id: str) -> dict | None:
+        with session_scope() as session:
+            record = session.scalar(
+                select(SupportTicketRecord).where(
+                    SupportTicketRecord.ticket_id == ticket_id
+                )
+            )
+            if record is None:
+                return None
+            return {
+                "thread_id": record.thread_id,
+                "ticket_id": record.ticket_id,
+                "ticket_data": dict(record.ticket_data),
+                "created_at": record.created_at.isoformat(),
+            }
+
+    def begin_resolution(
+        self,
+        thread_id: str,
+        reason: str,
+        email_subject: str,
+        email_body: str,
+    ) -> dict:
+        with session_scope() as session:
+            record = session.scalar(
+                select(SupportTicketRecord)
+                .where(SupportTicketRecord.thread_id == thread_id)
+                .with_for_update()
+            )
+            if record is None:
+                raise LookupError("The support ticket no longer exists.")
+
+            ticket_data = dict(record.ticket_data)
+            if ticket_data.get("status") in {"resolved", "rejected"}:
+                raise ValueError(
+                    f"This support ticket has already been "
+                    f"{ticket_data['status']}."
+                )
+
+            pending = ticket_data.get("resolution_pending")
+            if pending is not None:
+                if pending.get("reason") != reason:
+                    raise ValueError(
+                        "A different resolution is already pending "
+                        "for this ticket."
+                    )
+                return pending
+
+            pending = {
+                "reason": reason,
+                "email_subject": email_subject,
+                "email_body": email_body,
+            }
+            ticket_data["resolution_pending"] = pending
+            record.ticket_data = ticket_data
+            return pending
+
+    def mark_resolved(
+        self,
+        thread_id: str,
+        reason: str,
+        admin_username: str,
+        email_subject: str,
+        email_body: str,
+    ) -> dict:
+        with session_scope() as session:
+            record = session.scalar(
+                select(SupportTicketRecord)
+                .where(SupportTicketRecord.thread_id == thread_id)
+                .with_for_update()
+            )
+            if record is None:
+                raise LookupError("The support ticket no longer exists.")
+
+            ticket_data = dict(record.ticket_data)
+            if ticket_data.get("status") == "resolved":
+                return ticket_data
+            if ticket_data.get("status") == "rejected":
+                raise ValueError("A rejected ticket cannot be resolved.")
+
+            pending = ticket_data.get("resolution_pending")
+            if pending != {
+                "reason": reason,
+                "email_subject": email_subject,
+                "email_body": email_body,
+            }:
+                raise RuntimeError(
+                    "The pending resolution changed before it could be saved."
+                )
+
+            history = ticket_data.get("resolution_history", [])
+            if not isinstance(history, list):
+                raise RuntimeError("The ticket resolution history is invalid.")
+            history.append(
+                {
+                    "resolved_at": datetime.now(timezone.utc).isoformat(),
+                    "resolved_by": admin_username,
+                    "reason": reason,
+                    "email_subject": email_subject,
+                    "email_body": email_body,
+                    "email_status": "sent",
+                }
+            )
+            ticket_data["status"] = "resolved"
+            ticket_data["resolution_reason"] = reason
+            ticket_data["resolution_history"] = history
+            ticket_data.pop("resolution_pending", None)
+            record.ticket_data = ticket_data
+            return ticket_data
+
+    def mark_rejected(self, thread_id: str) -> dict:
+        with session_scope() as session:
+            record = session.scalar(
+                select(SupportTicketRecord)
+                .where(SupportTicketRecord.thread_id == thread_id)
+                .with_for_update()
+            )
+            if record is None:
+                raise LookupError("The support ticket no longer exists.")
+
+            ticket_data = dict(record.ticket_data)
+            if ticket_data.get("status") == "resolved":
+                raise ValueError("A resolved ticket cannot be rejected.")
+            if ticket_data.get("status") == "rejected":
+                return ticket_data
+            if ticket_data.get("resolution_pending") is not None:
+                raise ValueError(
+                    "A resolution email is already pending for this ticket."
+                )
+
+            ticket_data["status"] = "rejected"
+            record.ticket_data = ticket_data
+            return ticket_data
 
 
 class EmailDeliveryRepository:
