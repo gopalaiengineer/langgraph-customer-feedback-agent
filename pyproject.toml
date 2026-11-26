@@ -36,6 +36,9 @@ dependencies = [
 test = [
     "pytest>=8.0",
 ]
+reports = [
+    "reportlab>=4.0",
+]
 
 [project.scripts]
 app = "app:main"

@@ -64,6 +64,11 @@ def score_case(
             if expected.category is None
             else float(predicted.get("category") == expected.category)
         ),
+        "priority_accuracy": (
+            None
+            if expected.priority is None
+            else float(predicted.get("priority") == expected.priority)
+        ),
         "action_selection_accuracy": float(
             set(predicted.get("actions", [])) == expected_actions
         ),
@@ -81,6 +86,7 @@ def aggregate_scores(results: Sequence[CaseResult]) -> dict[str, Any]:
         "sentiment_accuracy",
         "intent_accuracy",
         "category_accuracy",
+        "priority_accuracy",
         "action_selection_accuracy",
         "conditional_route_accuracy",
         "node_execution_accuracy",
@@ -99,6 +105,45 @@ def aggregate_scores(results: Sequence[CaseResult]) -> dict[str, Any]:
             "accuracy": sum(values) / len(values) if values else None,
             "evaluated": len(values),
         }
+    core_metrics = (
+        "sentiment_accuracy",
+        "intent_accuracy",
+        "category_accuracy",
+        "priority_accuracy",
+        "action_selection_accuracy",
+        "conditional_route_accuracy",
+    )
+    core_metric_averages = [
+        aggregate[name]["accuracy"]
+        for name in core_metrics
+        if aggregate[name]["accuracy"] is not None
+    ]
+    completed = [
+        result for result in results if result.execution_status == "completed"
+    ]
+    fully_correct = sum(
+        all(
+            result.deterministic_scores.get(name) in {None, 1.0}
+            for name in core_metrics
+        )
+        for result in completed
+    )
+    aggregate["overall_performance"] = {
+        "overall_average_accuracy": (
+            sum(core_metric_averages) / len(core_metric_averages)
+            if core_metric_averages
+            else None
+        ),
+        "averaged_metrics": len(core_metric_averages),
+        "fully_correct_cases": fully_correct,
+        "evaluated_cases": len(completed),
+        "case_pass_rate": fully_correct / len(completed) if completed else None,
+        "method": (
+            "Macro average of sentiment, intent, category, priority, action, and "
+            "conditional-route accuracies; not-applicable metrics are excluded. "
+            "Case pass rate requires every applicable core metric to be correct."
+        ),
+    }
     aggregate["executions"] = {
         "total": len(results),
         "completed": sum(result.execution_status == "completed" for result in results),
@@ -133,4 +178,14 @@ def aggregate_scores(results: Sequence[CaseResult]) -> dict[str, Any]:
     aggregate["llm_judge"]["failed_cases"] = sum(
         result.judge_error is not None for result in results
     )
+    judge_scores = [
+        score
+        for result in results
+        if result.judge_scores is not None
+        for score in result.judge_scores.values()
+    ]
+    aggregate["llm_judge"]["overall_mean"] = (
+        sum(judge_scores) / len(judge_scores) if judge_scores else None
+    )
+    aggregate["llm_judge"]["overall_scale"] = "1-5"
     return aggregate

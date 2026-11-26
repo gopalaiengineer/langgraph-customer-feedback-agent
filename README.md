@@ -643,7 +643,7 @@ never sent.
 Install the test extra if pytest is not already available:
 
 ```powershell
-uv sync --extra test
+uv sync --extra test --extra reports
 ```
 
 Run the isolated unit/integration suite (no external model calls):
@@ -665,8 +665,17 @@ with a structured LLM judge. Compare a run to a saved JSON report using
 `--baseline evaluation/reports/evaluation-<run-id>.json`. Choose a `--version`
 label for each model/prompt version. Reports include prediction scores,
 execution errors, graph node traces, guardrail false acceptance/rejection,
-simulated side-effect counts, and per-case regression details. JSON and CSV
-files are written under `evaluation/reports/`, which is git-ignored.
+simulated side-effect counts, and per-case regression details. Each run writes
+only one combined JSON report and one PDF report under `evaluation/reports/`,
+which is git-ignored. The JSON includes graph and guardrail results, plus
+regression results when a baseline is supplied.
+
+The PDF contains readable metric and guardrail tables, accuracy and execution
+charts, a case-by-case expected-versus-observed explanation, and overall
+performance averages. Overall average accuracy is a macro average of the
+applicable sentiment, intent, category, priority, action, and route metrics.
+Full-case pass rate separately counts cases where every applicable core metric
+passed. The LLM judge average is shown separately on its 1–5 scale.
 
 Folder guide:
 
@@ -677,8 +686,8 @@ Folder guide:
   and mocked SMTP/database operations.
 - `evaluation/metrics.py`, `guardrails.py`, and `judge.py`: deterministic
   metrics, guardrail confusion metrics, and optional LLM scoring.
-- `evaluation/runner.py`, `reports.py`, and `regression.py`: execution,
-  JSON/CSV reports, and version-to-version comparison.
+- `evaluation/runner.py`, `reports.py`, `pdf_report.py`, and `regression.py`:
+  execution, combined JSON/PDF reports, and version-to-version comparison.
 - `tests/test_evaluation_*.py`: offline behavior, graph, failure, and
   concurrency checks.
 
@@ -687,14 +696,17 @@ outputs):
 
 ```json
 {
-  "sentiment_accuracy": {"accuracy": 0.9, "evaluated": 8},
-  "category_accuracy": {"accuracy": 0.8, "evaluated": 6},
-  "conditional_route_accuracy": {"accuracy": 1.0, "evaluated": 8},
+  "overall_performance": {
+    "overall_average_accuracy": 0.93,
+    "averaged_metrics": 6,
+    "fully_correct_cases": 7,
+    "evaluated_cases": 8,
+    "case_pass_rate": 0.875
+  },
+  "sentiment_accuracy": {"accuracy": 1.0, "evaluated": 8},
+  "priority_accuracy": {"accuracy": 0.83, "evaluated": 6},
   "executions": {
-    "total": 8,
-    "completed": 8,
-    "guardrail_rejected": 0,
-    "failed": 0,
+    "total": 8, "completed": 8, "guardrail_rejected": 0, "failed": 0,
     "tool_nodes_available": 0
   }
 }
