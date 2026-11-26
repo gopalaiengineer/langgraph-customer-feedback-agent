@@ -621,7 +621,92 @@ Or use the project environment managed by `uv`:
 uv run python -m unittest discover -s tests -v
 ```
 
-The repository currently includes a priority-escalation test module. Add tests for guardrails, routing, revision limits, and email-delivery behavior as those areas evolve.
+The tests cover guardrails, routing, revision limits, and email-delivery behavior.
+
+## Custom evaluation framework (no LangSmith)
+
+The separate [`evaluation/`](./evaluation/) package evaluates the real
+LangGraph workflow without changing production nodes. It uses the actual
+`FeedbackState` input fields, the `sentiment` result, and the negative-feedback
+`analysis` structure in `src/app/schemas/schema.py`. The graph does not emit a
+standalone intent field: evaluation derives a coarse intent from the existing
+sentiment/category values. Positive runs do not produce an `analysis` category,
+so category accuracy is reported only for labeled negative cases.
+
+The current graph has no LangChain tool nodes. Tool-like metrics therefore
+measure the real support-ticket and internal-notification graph nodes and are
+clearly labeled as such. Graph execution stops at the existing human-review
+interrupt. PostgreSQL checkpointing and ticket/email persistence are replaced
+with in-memory test doubles, and SMTP is always mocked; the customer email is
+never sent.
+
+Install the test extra if pytest is not already available:
+
+```powershell
+uv sync --extra test
+```
+
+Run the isolated unit/integration suite (no external model calls):
+
+```powershell
+uv run pytest -q
+```
+
+Run evaluation against the configured model providers. This sends only the
+synthetic feedback in the evaluation datasets to the providers. Model use is
+intentionally blocked unless `--allow-model-calls` is specified:
+
+```powershell
+uv run python -m evaluation --allow-model-calls
+```
+
+Add `--judge` to score relevance, helpfulness, empathy, accuracy, and clarity
+with a structured LLM judge. Compare a run to a saved JSON report using
+`--baseline evaluation/reports/evaluation-<run-id>.json`. Choose a `--version`
+label for each model/prompt version. Reports include prediction scores,
+execution errors, graph node traces, guardrail false acceptance/rejection,
+simulated side-effect counts, and per-case regression details. JSON and CSV
+files are written under `evaluation/reports/`, which is git-ignored.
+
+Folder guide:
+
+- `evaluation/datasets/`: synthetic classification and guardrail examples with
+  expected labels.
+- `evaluation/models.py` and `data.py`: validated records and dataset loading.
+- `evaluation/adapter.py`: actual graph integration with memory checkpointing
+  and mocked SMTP/database operations.
+- `evaluation/metrics.py`, `guardrails.py`, and `judge.py`: deterministic
+  metrics, guardrail confusion metrics, and optional LLM scoring.
+- `evaluation/runner.py`, `reports.py`, and `regression.py`: execution,
+  JSON/CSV reports, and version-to-version comparison.
+- `tests/test_evaluation_*.py`: offline behavior, graph, failure, and
+  concurrency checks.
+
+The CLI prints a summary shaped like this (metric values depend on model
+outputs):
+
+```json
+{
+  "sentiment_accuracy": {"accuracy": 0.9, "evaluated": 8},
+  "category_accuracy": {"accuracy": 0.8, "evaluated": 6},
+  "conditional_route_accuracy": {"accuracy": 1.0, "evaluated": 8},
+  "executions": {
+    "total": 8,
+    "completed": 8,
+    "guardrail_rejected": 0,
+    "failed": 0,
+    "tool_nodes_available": 0
+  }
+}
+```
+
+The evaluation runner disables LangSmith tracing in its process. It never
+modifies the production pipeline or weakens its guardrails. Guardrail tests use
+the separate synthetic cases in `evaluation/datasets/guardrails.json`. Existing
+tests plus evaluation integration tests cover retry configuration, database
+failure propagation, email idempotency, and concurrent send claims. The
+concurrency test uses an in-memory atomic claim; validating PostgreSQL locking
+under real database contention remains an opt-in infrastructure test.
 
 ## State, checkpointing, and limitations
 
